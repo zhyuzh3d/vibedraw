@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "happId": "com.zhyuzh.vibedraw",
+  "name": "VibeDraw",
+  "author": "zhyuzh",
+  "version": {
+    "code": 37,
+    "name": "0.3.23"
+  },
+  "entry": "index.html",
+  "routing": "hash",
+  "display": {
+    "orientation": "unspecified",
+    "keyboard": "resize"
+  }
+}

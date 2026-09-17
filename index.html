@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f5f7">
+  <title>VibeDraw</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/__hermit/icons/fontawesome/css/all.min.css">
+  <link rel="stylesheet" href="./styles/tokens.css">
+  <link rel="stylesheet" href="./styles/base.css">
+  <link rel="stylesheet" href="./styles/editor.css">
+  <link rel="stylesheet" href="./styles/components.css">
+</head>
+<body>
+  <svg class="filter-definitions" width="0" height="0" aria-hidden="true"><filter id="vibedraw-sharpen" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB"><feConvolveMatrix id="vibedraw-sharpen-matrix" order="3" kernelMatrix="0 0 0 0 1 0 0 0 0" divisor="1" preserveAlpha="true"></feConvolveMatrix></filter></svg>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">V</span><strong>VibeDraw</strong><small id="app-version"></small></div>
+      <button class="icon-button" id="open-menu" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="app-menu" data-zh="打开菜单" data-en="Open menu" data-i18n-attr="aria-label"><i class="fa-solid fa-bars" aria-hidden="true"></i></button>
+      <div class="app-menu" id="app-menu" hidden>
+        <button data-menu="new"><i class="fa-solid fa-plus"></i><span data-zh="新建作品" data-en="New artwork">新建作品</span></button>
+        <div class="menu-divider"></div>
+        <button data-menu="history"><i class="fa-solid fa-clock-rotate-left"></i><span data-zh="历史作品" data-en="Your artwork">历史作品</span><span class="menu-count" id="history-count">0</span></button>
+        <button data-menu="models"><i class="fa-solid fa-cubes"></i><span data-zh="模型配置" data-en="Models">模型配置</span></button>
+        <button data-menu="preferences"><i class="fa-solid fa-sliders"></i><span data-zh="软件设置" data-en="Preferences">软件设置</span></button>
+        <div class="menu-divider"></div>
+        <button data-menu="help"><i class="fa-solid fa-circle-question"></i><span data-zh="使用说明" data-en="How to draw">使用说明</span></button>
+        <button data-menu="about"><i class="fa-solid fa-circle-info"></i><span data-zh="软件信息" data-en="About VibeDraw">软件信息</span></button>
+      </div>
+    </header>
+    <main class="workspace">
+      <div class="work-heading">
+        <button class="work-name" id="rename-work"><span id="work-title"></span><i class="fa-solid fa-pen" aria-hidden="true"></i></button>
+        <span class="save-state" id="save-state" role="status"></span>
+        <button class="icon-button" id="work-settings" data-zh="作品设置" data-en="Artwork settings" data-i18n-attr="aria-label"><i class="fa-solid fa-gear"></i></button>
+      </div>
+      <section class="prompt-panel">
+        <div class="prompt-readonly" id="prompt-display" role="text" tabindex="0" data-zh="画面描述，在作品设置中编辑" data-en="Image description, edit in Artwork settings" data-i18n-attr="aria-label"></div>
+      </section>
+      <section class="canvas-area" aria-label="Canvas">
+        <div class="canvas-bar">
+          <div class="result-opacity-control">
+            <button class="result-visibility" id="result-visibility" type="button" aria-pressed="true" data-zh="隐藏成图" data-en="Hide result" data-i18n-attr="aria-label" data-help-zh="显示或隐藏 AI 成图层，不影响画布元素。" data-help-en="Show or hide the AI result layer without changing canvas elements."><i class="fa-solid fa-eye" aria-hidden="true"></i></button>
+            <label for="result-opacity"><span class="sr-only" id="opacity-target-label">成图透明度</span><input id="result-opacity" type="range" min="0" max="100" value="90"><output id="result-opacity-value">90%</output></label>
+          </div>
+          <div class="canvas-actions">
+            <button class="icon-button" id="canvas-fullscreen" aria-pressed="false" data-zh="全屏画布" data-en="Fullscreen canvas" data-i18n-attr="aria-label" data-help-zh="切换画布全屏，获得更大的绘制与选择空间。" data-help-en="Toggle fullscreen canvas for more drawing and selection space."><i class="fa-solid fa-expand"></i></button>
+            <button class="icon-button" id="color-adjust" aria-expanded="false" aria-controls="color-adjust-panel" data-zh="调色" data-en="Color adjustments" data-i18n-attr="aria-label" data-help-zh="展开调色面板，实时调整成图的显示效果。" data-help-en="Open color adjustments to tune the displayed result live."><i class="fa-solid fa-palette"></i></button>
+            <button class="icon-button" id="undo" disabled data-zh="撤销" data-en="Undo" data-i18n-attr="aria-label" data-help-zh="撤销上一步画布编辑。" data-help-en="Undo the previous canvas edit."><i class="fa-solid fa-rotate-left"></i></button>
+            <button class="icon-button" id="redo" disabled data-zh="重做" data-en="Redo" data-i18n-attr="aria-label" data-help-zh="恢复刚刚撤销的画布编辑。" data-help-en="Restore the most recently undone canvas edit."><i class="fa-solid fa-rotate-right"></i></button>
+            <button class="icon-button" id="clear-canvas" data-zh="清空草稿" data-en="Clear sketch" data-i18n-attr="aria-label" data-help-zh="删除全部画布元素，AI 成图会保留。" data-help-en="Remove all canvas elements while keeping the AI result."><i class="fa-regular fa-trash-can"></i></button>
+          </div>
+        </div>
+        <p class="action-help canvas-action-help" id="canvas-action-help" aria-live="polite"></p>
+        <div class="stage-section"><div class="stage-frame" id="stage-frame">
+          <div class="stage-background" id="stage-background"></div>
+          <img id="result-image" class="result-image" alt="AI result" hidden>
+          <img id="result-glow-image" class="result-image result-glow-image" alt="" aria-hidden="true" hidden>
+          <canvas id="draft-canvas" class="draft-canvas" width="768" height="768" aria-label="Drawing canvas"></canvas>
+          <canvas id="selection-canvas" class="selection-canvas" width="768" height="768" aria-hidden="true"></canvas>
+          <div class="stage-empty" id="stage-empty"><i class="fa-solid fa-pen-nib"></i><strong data-zh="从一笔开始" data-en="Start with a stroke">从一笔开始</strong><span data-zh="简单的线条，也有无限可能" data-en="A simple shape. Endless possibilities.">简单的线条，也有无限可能</span></div>
+          <div class="stage-busy" id="stage-busy" hidden><span class="spinner"></span><span id="busy-label"></span><button id="cancel-generation" data-zh="停止等待" data-en="Dismiss">停止等待</button></div>
+        </div></div>
+        <div class="color-adjust-panel" id="color-adjust-panel" hidden>
+          <label class="color-adjust-item"><span><span data-zh="亮度" data-en="Brightness">亮度</span><output data-adjust-output="resultBrightness">100%</output></span><input data-adjust="resultBrightness" type="range" min="40" max="180" value="100" data-suffix="%"></label>
+          <label class="color-adjust-item"><span><span data-zh="对比度" data-en="Contrast">对比度</span><output data-adjust-output="resultContrast">100%</output></span><input data-adjust="resultContrast" type="range" min="40" max="180" value="100" data-suffix="%"></label>
+          <label class="color-adjust-item"><span><span data-zh="饱和度" data-en="Saturation">饱和度</span><output data-adjust-output="resultSaturation">100%</output></span><input data-adjust="resultSaturation" type="range" min="0" max="220" value="100" data-suffix="%"></label>
+          <label class="color-adjust-item"><span><span data-zh="色相" data-en="Hue">色相</span><output data-adjust-output="resultHue">0°</output></span><input data-adjust="resultHue" type="range" min="-180" max="180" value="0" data-suffix="°"></label>
+          <label class="color-adjust-item"><span><span data-zh="梦幻辉光" data-en="Dream glow">梦幻辉光</span><output data-adjust-output="resultGlow">0%</output></span><input data-adjust="resultGlow" type="range" min="0" max="100" value="0" data-suffix="%"></label>
+          <label class="color-adjust-item"><span><span data-zh="清晰度" data-en="Sharpness">清晰度</span><output data-adjust-output="resultClarity">0%</output></span><input data-adjust="resultClarity" type="range" min="0" max="100" value="0" data-suffix="%"></label>
+          <div class="color-adjust-actions"><button class="icon-button color-adjust-close" id="color-adjust-close" type="button" data-zh="关闭调色面板" data-en="Close color adjustments" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button><button class="button button-secondary color-adjust-effect" id="color-adjust-enabled" type="button" aria-pressed="true"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i><span data-zh="效果开" data-en="Effects on">效果开</span></button><button class="button button-secondary" id="color-adjust-reset" type="button" data-zh="重置" data-en="Reset">重置</button><button class="button button-secondary" id="color-adjust-default" type="button" data-zh="设为默认" data-en="Set as default">设为默认</button></div>
+        </div>
+      </section>
+      <div class="fullscreen-bottom" id="fullscreen-bottom">
+      <button class="fullscreen-tools-toggle" id="fullscreen-tools-toggle" type="button" aria-expanded="true" data-zh="收起底部工具" data-en="Collapse bottom tools" data-i18n-attr="aria-label"><i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
+      <section class="drawing-dock">
+        <nav class="tool-group" aria-label="Drawing tools">
+          <button class="tool-button" data-tool="select" data-help-zh="选择、框选、移动、缩放或组合画布对象。" data-help-en="Select, marquee, move, resize, or group canvas objects."><i class="fa-solid fa-arrow-pointer"></i><span data-zh="选择" data-en="Select">选择</span></button>
+          <button class="tool-button is-active" data-tool="pencil" data-help-zh="用细线勾勒轮廓，可调整粗细与透明度。" data-help-en="Sketch outlines with adjustable size and opacity."><i class="fa-solid fa-pencil"></i><span data-zh="铅笔" data-en="Pencil">铅笔</span></button>
+          <button class="tool-button" data-tool="brush" data-help-zh="铺设色块，可调整粗细、颜色与透明度。" data-help-en="Paint color areas with adjustable size, color, and opacity."><i class="fa-solid fa-paintbrush"></i><span data-zh="涂色" data-en="Brush">涂色</span></button>
+          <button class="tool-button" data-tool="eraser" data-help-zh="擦除笔画或图片上的画布元素内容。" data-help-en="Erase content from editable canvas elements."><i class="fa-solid fa-eraser"></i><span data-zh="擦除" data-en="Eraser">擦除</span></button>
+          <button class="tool-button" data-tool="mask" data-help-zh="标记希望模型局部重绘的区域。" data-help-en="Mark an area for supported models to repaint."><i class="fa-solid fa-mask-face"></i><span data-zh="局部" data-en="Mask">局部</span></button>
+          <button class="tool-button" id="add-image" data-help-zh="导入一张图片作为可移动、可缩放的画布元素。" data-help-en="Import an image as a movable and resizable canvas element."><i class="fa-regular fa-image"></i><span data-zh="图片" data-en="Image">图片</span></button>
+        </nav>
+        <div class="tool-options" id="tool-options">
+          <div class="draw-options" id="draw-options">
+            <button class="color-control color-button" id="stroke-color" type="button" data-zh="画笔颜色" data-en="Stroke color" data-i18n-attr="aria-label" data-help-zh="设置铅笔或涂色工具的颜色与透明度。" data-help-en="Set the pencil or brush color and opacity."></button>
+            <div class="stroke-controls"><label class="stroke-control"><span id="size-label" data-zh="粗细" data-en="Size">粗细</span><input id="brush-size" type="range" min="1" max="96" value="18"><output id="brush-size-value">18</output></label><label class="stroke-control" id="stroke-opacity-control"><span data-zh="透明" data-en="Opacity">透明</span><input id="stroke-opacity" type="range" min="5" max="100" value="72"><output id="stroke-opacity-value">72%</output></label></div>
+            <button class="color-control color-button bg-control" id="background-color" type="button" data-zh="画布底色" data-en="Canvas background" data-i18n-attr="aria-label" data-help-zh="设置画布与模型参考图使用的真实背景色。" data-help-en="Set the solid background used by the canvas and model reference."><span aria-hidden="true">BG</span></button>
+          </div>
+          <div id="selection-options" class="selection-options" hidden><span id="selection-hint"></span><div id="selection-actions" hidden>
+            <button class="selection-color-button" id="selection-color" data-zh="改变所选笔画颜色" data-en="Recolor selected strokes" data-i18n-attr="aria-label" data-help-zh="统一修改所选笔画的颜色与透明度。" data-help-en="Apply one color and opacity to all selected strokes."><span class="selection-color-swatch" aria-hidden="true"></span><span id="selection-color-label">变色</span></button>
+            <button class="icon-button" id="group-selected" data-zh="成组" data-en="Group" data-i18n-attr="aria-label" data-help-zh="把所选对象组成一个可整体选择的组。" data-help-en="Group selected objects so they can be selected together."><i class="fa-solid fa-object-group"></i></button>
+            <button class="icon-button" id="ungroup-selected" data-zh="取消成组" data-en="Ungroup" data-i18n-attr="aria-label" data-help-zh="解除所选对象的成组关系。" data-help-en="Remove grouping from the selected objects."><i class="fa-solid fa-object-ungroup"></i></button>
+            <button class="icon-button" id="scale-down" data-zh="缩小" data-en="Shrink" data-i18n-attr="aria-label" data-help-zh="等比缩小所选对象。" data-help-en="Scale the selected objects down proportionally."><i class="fa-solid fa-minus"></i></button>
+            <button class="icon-button" id="scale-up" data-zh="放大" data-en="Enlarge" data-i18n-attr="aria-label" data-help-zh="等比放大所选对象。" data-help-en="Scale the selected objects up proportionally."><i class="fa-solid fa-plus"></i></button>
+            <button class="icon-button" id="layer-down" data-zh="下移一层" data-en="Send backward" data-i18n-attr="aria-label" data-help-zh="把单个所选对象下移一层。" data-help-en="Send the selected object back by one layer."><i class="fa-solid fa-arrow-down"></i></button>
+            <button class="icon-button" id="layer-up" data-zh="上移一层" data-en="Bring forward" data-i18n-attr="aria-label" data-help-zh="把单个所选对象上移一层。" data-help-en="Bring the selected object forward by one layer."><i class="fa-solid fa-arrow-up"></i></button>
+            <button class="icon-button" id="duplicate-selected" data-zh="复制对象" data-en="Duplicate" data-i18n-attr="aria-label" data-help-zh="复制所选对象并轻微错开位置。" data-help-en="Duplicate selected objects with a small offset."><i class="fa-regular fa-copy"></i></button>
+            <button class="icon-button danger" id="delete-selected" data-zh="删除对象" data-en="Delete object" data-i18n-attr="aria-label" data-help-zh="删除当前所选对象。" data-help-en="Delete the selected objects."><i class="fa-regular fa-trash-can"></i></button>
+          </div></div>
+        </div>
+        <p class="action-help tool-action-help" id="tool-action-help" aria-live="polite"></p>
+      </section>
+      <div class="generation-row">
+        <button class="auto-button" id="auto-toggle" aria-pressed="true" data-help-zh="切换落笔停止后是否自动调用快速模型。" data-help-en="Toggle automatic Fast generation after drawing stops."><i class="fa-solid fa-bolt"></i><span></span></button>
+        <button class="generation-button generation-quick" id="generate-quick" data-help-zh="用实时模型根据当前参考画面生成快速预览。" data-help-en="Generate a quick preview from the current reference with the realtime model."><i class="fa-solid fa-wand-magic-sparkles"></i><span data-zh="快速" data-en="Fast">快速</span></button>
+        <button class="icon-button seed-random-button" id="seed-lock" type="button" data-zh="更换随机数并快速生成" data-en="Roll a new seed and generate fast" data-i18n-attr="aria-label" data-help-zh="更换并锁定随机数，然后立即执行一次快速生成。" data-help-en="Roll and lock a new seed, then run Fast immediately."><i class="fa-solid fa-dice" aria-hidden="true"></i><span id="seed-value"></span></button>
+        <button class="generation-button generation-quality" id="generate-quality" data-help-zh="把当前实际画布交给高质量模型，渲染 1024 × 1024 大图。" data-help-en="Send the visible canvas to the high-quality model for a 1024 × 1024 render."><i class="fa-regular fa-gem"></i><span data-zh="渲染" data-en="Render">渲染</span></button>
+        <button class="overlay-generate-button" id="overlay-toggle" type="button" role="switch" aria-checked="false" data-zh="切换叠加生成" data-en="Toggle overlay generation" data-i18n-attr="aria-label" data-help-zh="切换成图在元素下方叠加并参与下一次参考。" data-help-en="Toggle placing the result below elements and including it in the next reference."><span class="mini-switch" aria-hidden="true"></span><span data-zh="叠加生成" data-en="Overlay">叠加生成</span></button>
+        <button class="snapshot-button" id="snapshot-canvas" type="button" data-zh="把当前显示画面复制为可编辑图片" data-en="Copy the visible canvas as an editable image" data-i18n-attr="aria-label" data-help-zh="把当前实际显示效果压平为一个可编辑图片元素。" data-help-en="Flatten the current visible canvas into one editable image element."><i class="fa-solid fa-camera" aria-hidden="true"></i><span data-zh="快照" data-en="Snapshot">快照</span></button>
+        <button class="icon-button export-button" id="export-image" data-zh="下载当前画布" data-en="Download visible canvas" data-i18n-attr="aria-label" data-help-zh="直接下载当前画布实际显示效果，不单独导出 AI 成图。" data-help-en="Download the visible canvas exactly as shown, not the AI result alone."><i class="fa-solid fa-download"></i></button>
+      </div>
+      <p class="status-line" id="status-line" role="status"></p>
+      </div>
+      <input id="fallback-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    </main>
+  </div>
+  <div class="modal-layer" id="modal-layer" hidden><div class="modal-backdrop" data-close-modal></div><section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="sheet-handle"></div><header class="modal-header"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" data-close-modal data-zh="关闭" data-en="Close" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark"></i></button></header><div class="modal-content" id="modal-content"></div><footer class="modal-actions" id="modal-actions" hidden></footer></section></div>
+  <div class="modal-layer confirm-layer" id="confirm-layer" hidden><div class="modal-backdrop"></div><section class="modal-sheet centered" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1"><header class="modal-header"><h2 id="confirm-title"></h2></header><div class="modal-content"><p id="confirm-message"></p><div class="button-row"><button class="button button-secondary" id="confirm-cancel"></button><button class="button button-primary" id="confirm-ok"></button></div></div></section></div>
+  <section class="render-preview" id="render-preview" role="dialog" aria-modal="true" aria-labelledby="render-preview-title" hidden>
+    <header class="render-preview-header"><div><strong id="render-preview-title" data-zh="高清渲染" data-en="High-resolution render">高清渲染</strong><small id="render-preview-meta">1024 × 1024</small></div><div><button class="icon-button" id="render-preview-download" data-zh="下载渲染大图" data-en="Download render" data-i18n-attr="aria-label"><i class="fa-solid fa-download"></i></button><button class="icon-button" id="render-preview-close" data-zh="关闭预览" data-en="Close preview" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark"></i></button></div></header>
+    <div class="render-preview-stage" id="render-preview-stage"><img id="render-preview-image" alt="High-resolution AI render" draggable="false"></div>
+    <footer class="render-preview-footer"><span id="render-preview-zoom">100%</span><span data-zh="双指缩放 · 单指拖动" data-en="Pinch to zoom · drag to pan">双指缩放 · 单指拖动</span></footer>
+  </section>
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="./app/core/namespace.js"></script><script src="./app/core/utils.js"></script><script src="./app/core/i18n.js"></script>
+  <script src="./app/platform/hermit.js"></script><script src="./app/services/assets.js"></script><script src="./app/services/store.js"></script><script src="./app/services/providers.js"></script><script src="./app/services/image-engine.js"></script>
+  <script src="./app/components/ui.js"></script><script src="./app/components/canvas.js"></script><script src="./app/components/render-preview.js"></script><script src="./app/components/settings.js"></script><script src="./app/components/gallery.js"></script>
+  <script src="./app/features/editor.js"></script><script src="./app/features/self-test.js"></script><script src="./app/app.js"></script>
+</body>
+</html>

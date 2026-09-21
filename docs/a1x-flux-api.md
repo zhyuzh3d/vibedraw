@@ -12,7 +12,7 @@ VibeDraw 在用户保存访问密码后发送 `Authorization: Bearer <password>`
 
 - `qualification.image_generate` 为 `qualified`；
 - `image_models.lcm_blended_img2img_sd15.allowed_steps` 和 `image_models.flux2.allowed_steps` 都至少包含 `2`、`4`、`8`；
-- `image_models.lcm_blended_img2img_sd15.allowed_resolution_tiers` 至少包含 `compact512`，`image_models.flux2.allowed_resolution_tiers` 至少包含 `standard1024`；
+- `image_resolutions.compact512.1:1` 必须是 `[512, 512]`，`image_resolutions.native.1:1` 必须是 `[1024, 1024]`；旧服务也可通过模型的 `allowed_resolution_tiers` 字段声明这两个档位；
 - 最多参考图数量不小于 1。
 
 连接测试还会读取 `GET /api/a1x-h3/v2/jobs?limit=1`，用来确认鉴权有效。
@@ -38,7 +38,7 @@ VibeDraw 在用户保存访问密码后发送 `Authorization: Bearer <password>`
   "reference_strength": 0.8,
   "reference_megapixels": 1,
   "inputs": { "image_references": ["asset_id"] },
-  "output": { "aspect_ratio": "1:1", "resolution_tier": "standard1024" },
+  "output": { "aspect_ratio": "1:1", "resolution_tier": "native" },
   "seed": 73
 }
 ```
@@ -46,7 +46,7 @@ VibeDraw 在用户保存访问密码后发送 `Authorization: Bearer <password>`
 约束如下：
 
 - `sampling_steps` 只能为 2、4、8；实时槽位固定使用 DreamShaper8 LCM profile，高质量槽位的 2/4 步使用 Flux.2 Distilled、8 步使用 Flux.2 Base；
-- 实时槽位使用 `compact512` 并输出 512×512；高质量“渲染”槽位必须支持 `standard1024` 并输出真实的 1024×1024。客户端会检查返回图片尺寸，不会把 512 图片在手机端放大伪装成高清结果；
+- 实时槽位使用 `compact512` 并输出 512×512；高质量“渲染”槽位使用 `native` 并输出真实的 1024×1024。客户端会检查返回图片尺寸，不会把 512 图片在手机端放大伪装成高清结果；
 - DreamShaper8 LCM 的 `guidance_scale` 固定为 2，并只走单路 img2img。客户端发送 `input_blur_radius: 3`、`input_blur_sigma: 1.2`、`input_blur_mix: 0.25`，服务端应先把轻微模糊副本与原图混合，再使用 `reference_strength` 作为去噪强度；编辑器 30–120% 的“绘制稿强度”映射为 0.85–0.27 的去噪值，强度越大越忠于原稿。Flux.2 的 `guidance_scale` 固定为 1，并额外发送 `reference_megapixels: 1`；
 - 页面提示词可以留空。由于当前 A1X 服务合同仍要求非空 `prompt`，VibeDraw 只在请求层填入中性的保真指令，作品中仍保存为空提示词；
 - VibeDraw 原样提交画布实际显示内容，不改写颜色、透明度、对比度或构图。高质量“渲染”始终提交包含当前背景、可见成图层、元素透明度和调色效果的 1024×1024 参考图。DreamShaper 实时槽位读取同一张彩色参考图；颜色笔迹必须覆盖足够面积，细线只表达结构时，模型无法可靠判断它是物体表面色还是标注线，精确的对象颜色仍应在提示词中说明；

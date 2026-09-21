@@ -58,8 +58,8 @@
       if (!automatic) app.events.emit("error", new Error(t("先在画布上方描述你想画什么", "Describe your idea above the canvas first")));
       return;
     }
-    if (slot !== "quality" && canvasInput.hasMask() && config.protocol !== "a1x-image" && (config.inputMode === "text" || ["openai-images", "sd-webui"].indexOf(config.protocol) < 0)) {
-      if (!automatic) app.events.emit("error", new Error(t("当前模型不支持局部蒙版，请使用 OpenAI Images 或 SD WebUI 的草图模式", "Masks require an OpenAI Images or SD WebUI model in sketch mode")));
+    if (slot !== "quality" && canvasInput.hasMask() && config.protocol !== "a1x-image" && (config.inputMode === "text" || ["openai-images", "sd-webui", "comfyui"].indexOf(config.protocol) < 0)) {
+      if (!automatic) app.events.emit("error", new Error(t("当前模型不支持局部蒙版，请使用 OpenAI Images、SD WebUI 或 ComfyUI VibeDraw 工作流", "Masks require an OpenAI Images, SD WebUI, or ComfyUI VibeDraw workflow")));
       return;
     }
     running = true; queuedSlot = ""; dismissed = false;
@@ -69,19 +69,25 @@
     try {
       var a1xReference = config.protocol === "a1x-image" ? { size: slot === "quality" ? 1024 : 512, mime: "image/jpeg", quality: 0.82, maxBytes: 500 * 1024 } : null;
       var referenceOptions = a1xReference || (slot === "quality" ? { size: 1024, mime: "image/png" } : null);
+      var maskDataUrl = null, openAiMaskDataUrl = null;
+      if (slot !== "quality" && canvasInput.hasMask()) {
+        if (config.protocol === "openai-images") openAiMaskDataUrl = canvasInput.composeMask(true);
+        else if (config.protocol === "sd-webui" || config.protocol === "comfyui") maskDataUrl = canvasInput.composeMask(false);
+      }
       var input = { prompt: prompt, negativePrompt: app.state.negativePrompt, seed: app.state.seedLocked ? app.state.seed : -1, strength: app.state.strength, colorStrength: app.state.colorStrength,
         imageDataUrl: slot === "quality" ? await canvasInput.composeVisibleInput(referenceOptions) : await canvasInput.composeInput(referenceOptions),
-        maskDataUrl: slot === "quality" ? null : canvasInput.composeMask(false), openAiMaskDataUrl: slot === "quality" ? null : canvasInput.composeMask(true) };
+        maskDataUrl: maskDataUrl, openAiMaskDataUrl: openAiMaskDataUrl };
       var result = await withDeadline(app.services.providers.generate(config, input), overallTimeout(config));
       if (token !== generation) return;
       if (slot === "quality") {
         var dimensions = await canvasInput.imageDimensions(result.src);
         if (dimensions.width !== 1024 || dimensions.height !== 1024) throw new Error(t("高质量模型返回了 " + dimensions.width + " × " + dimensions.height + "，渲染接口必须输出 1024 × 1024", "The high-quality model returned " + dimensions.width + " × " + dimensions.height + "; Render requires 1024 × 1024 output"));
       }
-      app.state.result = { src: result.src, logicalFileId: result.logicalFileId || "", slot: slot, prompt: prompt, createdAt: Date.now() };
+      var generated = { src: result.src, logicalFileId: result.logicalFileId || "", slot: slot, prompt: prompt, createdAt: Date.now() };
+      if (slot === "quality") app.state.renderResult = generated; else app.state.result = generated;
       succeeded = true;
-      app.events.emit("generation:done", app.state.result);
-      app.services.store.scheduleCanvasSave();
+      app.events.emit("generation:done", generated);
+      if (slot !== "quality") app.services.store.scheduleCanvasSave();
     } catch (error) {
       if (token === generation) app.events.emit("generation:error", error);
     } finally {

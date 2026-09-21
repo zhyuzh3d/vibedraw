@@ -2,15 +2,17 @@
   "use strict";
 
   var state = app.state;
-  var canvas, context, contentCanvas, contentContext, selectionCanvas, selectionContext;
+  var canvas, context, contentCanvas, contentContext, selectionCanvas, selectionContext, frameTask, selectionTask;
   var drawingObject = null;
   var dragging = null;
   var resizing = null;
   var pinching = null;
   var selectionGesture = null;
   var selectionMarquee = null;
-  var activePointers = {};
-  var imageCache = {};
+  var activePointers = {}, inputRect = null;
+  var imageCache = app.runtime.createLru({ maxEntries: 16, maxWeight: 48 * 1024 * 1024, weight: function (image) { return Math.max(1, Number(image.naturalWidth) * Number(image.naturalHeight) * 4); } }), imageLoads = new Map(), imageRefresh = new Set(), resultLayerCache = new WeakMap();
+  var boundsCache = new WeakMap(), contentDirty = true, lastRenderMeta = "", lastBackgroundStyle = "", lastOpacityStyle = "";
+  var performance = { frames: 0, contentRebuilds: 0, objectsDrawn: 0 };
   var WIDTH = 768;
   var HANDLE_DRAW_RADIUS = 16;
   var HANDLE_HIT_RADIUS = 36;
@@ -18,6 +20,8 @@
   var MAX_IMAGE_SIZE = WIDTH * 3;
   var MIN_STROKE_SIZE = 3;
   var GESTURE_THRESHOLD = 12;
+  var HISTORY_MAX_ENTRIES = 60;
+  var HISTORY_MAX_WEIGHT = 12 * 1024 * 1024;
 
   function resultColorFilter(settings) {
     settings = settings || state;
@@ -59,8 +63,13 @@
     settings = settings || state;
     var alpha = ctx.globalAlpha;
     function paint(targetContext) { if (contained) drawContained(targetContext, image, width, height); else targetContext.drawImage(image, 0, 0, width, height); }
-    var layer = document.createElement("canvas"); layer.width = width; layer.height = height;
-    var layerContext = layer.getContext("2d"); layerContext.filter = resultColorFilter(settings); paint(layerContext); sharpenCanvas(layer, settings);
+    var key = [width, height, contained ? 1 : 0, settings.resultAdjustmentsEnabled === false ? 0 : 1, settings.resultBrightness, settings.resultContrast, settings.resultSaturation, settings.resultHue, settings.resultClarity].join("|");
+    var cachedLayer = resultLayerCache.get(image), layer = cachedLayer && cachedLayer.key === key ? cachedLayer.canvas : null;
+    if (!layer) {
+      layer = document.createElement("canvas"); layer.width = width; layer.height = height;
+      var layerContext = layer.getContext("2d"); layerContext.filter = resultColorFilter(settings); paint(layerContext); sharpenCanvas(layer, settings);
+      resultLayerCache.set(image, { key: key, canvas: layer });
+    }
     ctx.drawImage(layer, 0, 0);
     var glow = settings.resultAdjustmentsEnabled === false ? 0 : Number(settings.resultGlow) || 0;
     if (glow > 0) {
@@ -74,6 +83,8 @@
     selectionCanvas = document.getElementById("selection-canvas");
     selectionContext = selectionCanvas.getContext("2d");
     contentCanvas = document.createElement("canvas"); contentCanvas.width = WIDTH; contentCanvas.height = WIDTH; contentContext = contentCanvas.getContext("2d");
+    frameTask = app.runtime.createFrameTask(paintFrame);
+    selectionTask = app.runtime.createFrameTask(function (ids) { app.events.emit("selection", ids); });
     bindInput();
     render();
     resetHistory();
@@ -93,9 +104,9 @@
       canvas.addEventListener("touchend", end, { passive: false });
     }
   }
-  function setInteractionActive(active) { app.events.emit("canvas:interaction", Boolean(active)); }
+  function setInteractionActive(active) { if (!active) inputRect = null; app.events.emit("canvas:interaction", Boolean(active)); }
   function pointFromSource(source) {
-    var rect = canvas.getBoundingClientRect();
+    var rect = inputRect || canvas.getBoundingClientRect();
     return { x: (source.clientX - rect.left) * WIDTH / rect.width, y: (source.clientY - rect.top) * WIDTH / rect.height };
   }
   function point(event) { return pointFromSource(event.touches && event.touches[0] || event.changedTouches && event.changedTouches[0] || event); }
@@ -106,7 +117,7 @@
   function start(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (state.tool !== "select" && event.isPrimary === false) return;
-    setInteractionActive(true);
+    inputRect = canvas.getBoundingClientRect(); setInteractionActive(true);
     event.preventDefault();
     if (event.pointerId !== undefined && canvas.setPointerCapture && event.isTrusted) canvas.setPointerCapture(event.pointerId);
     var p = point(event);
@@ -115,14 +126,14 @@
       var pair = event.pointerId === undefined ? touchPair(event) : pointerPair();
       var current = selectedObjects();
       if (pair && current.length && insideSelection(pair[0], current, HANDLE_HIT_RADIUS) && insideSelection(pair[1], current, HANDLE_HIT_RADIUS)) {
-        selectionGesture = null; selectionMarquee = null; beginPinch(current, pair); render(); return;
+        selectionGesture = null; selectionMarquee = null; beginPinch(current, pair); scheduleRender(false); return;
       }
       if (event.pointerId !== undefined && Object.keys(activePointers).length > 1) { selectionGesture = null; return; }
       var handle = current.length ? hitHandle(p, current) : null;
       if (handle) {
         resizing = beginResize(current, handle, event.pointerId); dragging = null; selectionGesture = null;
         canvas.style.cursor = handle.key === "nw" || handle.key === "se" ? "nwse-resize" : "nesw-resize";
-        render(); return;
+        scheduleRender(false); return;
       }
       var hit = hitTest(p), ids = selectionIds(), moveIds = [], hitIds = hit ? objectSelectionIds(hit) : [];
       var modified = Boolean(event.shiftKey || event.ctrlKey || event.metaKey);
@@ -148,13 +159,13 @@
       points: [p]
     };
     state.objects.push(drawingObject);
-    render();
+    scheduleRender(false);
   }
   function move(event) {
     if (event.pointerId !== undefined && activePointers[event.pointerId]) activePointers[event.pointerId] = point(event);
     if (pinching) {
       var pair = event.pointerId === undefined ? touchPair(event) : pointerPair();
-      if (pair) { event.preventDefault(); applyPinch(pair); render(); }
+      if (pair) { event.preventDefault(); applyPinch(pair); scheduleRender(true); }
       return;
     }
     if (selectionGesture) {
@@ -166,33 +177,33 @@
         setSelection(selectionGesture.moveIds);
         dragging = { objects: selectedObjects(), x: selectionGesture.start.x, y: selectionGesture.start.y, moved: false, pointerId: selectionGesture.pointerId };
         selectionGesture = null; emitSelection(); canvas.style.cursor = "grabbing";
-        moveDraggingTo(gesturePoint); render();
+        moveDraggingTo(gesturePoint); scheduleRender(true);
       } else {
         selectionMarquee = { start: selectionGesture.start, current: gesturePoint, initialIds: selectionGesture.initialIds, modified: selectionGesture.modified, pointerId: selectionGesture.pointerId };
         selectionGesture = null; canvas.style.cursor = "crosshair";
-        updateMarqueeSelection(); render(); emitSelection();
+        updateMarqueeSelection(); scheduleRender(false); emitSelection();
       }
       return;
     }
     if (selectionMarquee) {
       if (selectionMarquee.pointerId !== undefined && event.pointerId !== selectionMarquee.pointerId) return;
-      event.preventDefault(); selectionMarquee.current = point(event); updateMarqueeSelection(); render(); emitSelection(); return;
+      event.preventDefault(); selectionMarquee.current = point(event); updateMarqueeSelection(); scheduleRender(false); emitSelection(); return;
     }
     if (!drawingObject && !dragging && !resizing) return;
     event.preventDefault();
     var p = point(event);
     if (drawingObject) {
       var points = drawingObject.points, last = points[points.length - 1];
-      if (distance(last, p) >= 1.5) points.push(p);
-      render();
+      if (distance(last, p) >= 1.5) { points.push(p); invalidateBounds(drawingObject); }
+      scheduleRender(false);
       return;
     }
     if (resizing) {
       if (resizing.pointerId !== undefined && event.pointerId !== resizing.pointerId) return;
-      resizeTo(p); render(); return;
+      resizeTo(p); scheduleRender(true); return;
     }
     if (dragging.pointerId !== undefined && event.pointerId !== dragging.pointerId) return;
-    moveDraggingTo(p); render();
+    moveDraggingTo(p); scheduleRender(true);
   }
   function end(event) {
     if (event && event.pointerId !== undefined) delete activePointers[event.pointerId];
@@ -210,7 +221,7 @@
     if (selectionMarquee && selectionMarquee.pointerId !== undefined && event && event.pointerId !== undefined && event.pointerId !== selectionMarquee.pointerId) return;
     if (selectionGesture && selectionGesture.pointerId !== undefined && event && event.pointerId !== undefined && event.pointerId !== selectionGesture.pointerId) return;
     if (selectionMarquee) {
-      selectionMarquee = null; selectionGesture = null; canvas.style.cursor = "grab"; render(); emitSelection(); setInteractionActive(false); return;
+      selectionMarquee = null; selectionGesture = null; canvas.style.cursor = "grab"; scheduleRender(false); emitSelection(); setInteractionActive(false); return;
     }
     if (selectionGesture) {
       var gesture = selectionGesture; selectionGesture = null;
@@ -223,13 +234,15 @@
           setSelection(toggled);
         } else setSelection(objectSelectionIds(gesture.hit));
       } else setSelection([]);
-      canvas.style.cursor = "grab"; render(); emitSelection(); setInteractionActive(false); return;
+      canvas.style.cursor = "grab"; scheduleRender(false); emitSelection(); setInteractionActive(false); return;
     }
     var changed = Boolean(drawingObject || dragging && dragging.moved || resizing && resizing.changed);
-    drawingObject = null;
+    var finishedDrawing = Boolean(drawingObject); drawingObject = null;
     dragging = null;
     resizing = null;
     if (state.tool === "select") canvas.style.cursor = "grab";
+    if (finishedDrawing) render();
+    else if (frameTask && frameTask.pending()) frameTask.flush();
     if (changed) commit();
     setInteractionActive(false);
   }
@@ -242,6 +255,7 @@
   function translate(object, dx, dy) {
     if (object.type === "stroke") object.points.forEach(function (p) { p.x += dx; p.y += dy; });
     else { object.x += dx; object.y += dy; }
+    invalidateBounds(object);
   }
   function distance(a, b) { var dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
   function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
@@ -252,7 +266,10 @@
   function selectionIds() {
     var ids = Array.isArray(state.selectedIds) ? state.selectedIds.slice() : [];
     if (!ids.length && state.selectedId) ids.push(state.selectedId);
-    return ids.filter(function (id, index) { return id && ids.indexOf(id) === index && state.objects.some(function (object) { return object.id === id; }); });
+    var existing = new Set(), unique = [];
+    state.objects.forEach(function (object) { existing.add(object.id); });
+    ids.forEach(function (id) { if (id && existing.has(id) && unique.indexOf(id) < 0) unique.push(id); });
+    return unique;
   }
   function setSelection(ids) {
     var expanded = [];
@@ -268,10 +285,10 @@
     if (!object || !object.groupId) return object ? [object.id] : [];
     return state.objects.filter(function (item) { return item.groupId === object.groupId; }).map(function (item) { return item.id; });
   }
-  function emitSelection() { app.events.emit("selection", selectionIds()); }
+  function emitSelection() { if (selectionTask) selectionTask.request(selectionIds()); }
   function selectedObjects() {
-    var ids = selectionIds();
-    return state.objects.filter(function (object) { return ids.indexOf(object.id) >= 0; });
+    var ids = new Set(selectionIds());
+    return state.objects.filter(function (object) { return ids.has(object.id); });
   }
   function normalizedRect(a, b) {
     return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
@@ -307,18 +324,16 @@
   }
   function updateMarqueeSelection() {
     var rect = normalizedRect(selectionMarquee.start, selectionMarquee.current);
-    var matched = [];
-    state.objects.filter(function (object) { return objectIntersectsRect(object, rect); }).forEach(function (object) {
-      objectSelectionIds(object).forEach(function (id) { if (matched.indexOf(id) < 0) matched.push(id); });
+    var matched = [], seen = new Set();
+    state.objects.forEach(function (object) {
+      if (!objectIntersectsRect(object, rect)) return;
+      objectSelectionIds(object).forEach(function (id) { if (!seen.has(id)) { seen.add(id); matched.push(id); } });
     });
     if (selectionMarquee.modified) matched = selectionMarquee.initialIds.concat(matched);
     setSelection(matched);
   }
   function selectionBounds(objects) {
-    if (!objects || !objects.length) return null;
-    var boxes = objects.map(bounds), left = Math.min.apply(null, boxes.map(function (box) { return box.x; })), top = Math.min.apply(null, boxes.map(function (box) { return box.y; }));
-    var right = Math.max.apply(null, boxes.map(function (box) { return box.x + box.width; })), bottom = Math.max.apply(null, boxes.map(function (box) { return box.y + box.height; }));
-    return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+    return app.drawing.selectionBounds(objects, bounds);
   }
   function insideSelection(p, objects, padding) {
     var box = selectionBounds(objects); if (!box) return false;
@@ -346,7 +361,7 @@
     });
     return { minimum: minimum, maximum: maximum };
   }
-  function snapshotObjects(objects) { return objects.map(function (object) { return app.utils.copy(object); }); }
+  function snapshotObjects(objects) { return app.drawing.cloneObjects(objects); }
   function scaleSnapshots(objects, originals, anchor, factor) {
     objects.forEach(function (object, index) {
       var original = originals[index];
@@ -357,6 +372,7 @@
         object.x = anchor.x + (original.x - anchor.x) * factor; object.y = anchor.y + (original.y - anchor.y) * factor;
         object.width = original.width * factor; object.height = original.height * factor;
       }
+      invalidateBounds(object);
     });
   }
   function beginResize(objects, handle, pointerId) {
@@ -400,6 +416,8 @@
   function hitTest(p) {
     for (var index = state.objects.length - 1; index >= 0; index -= 1) {
       var object = state.objects[index];
+      var box = bounds(object), padding = object.type === "image" ? 0 : 12;
+      if (p.x < box.x - padding || p.x > box.x + box.width + padding || p.y < box.y - padding || p.y > box.y + box.height + padding) continue;
       if (object.type === "image") {
         if (p.x >= object.x && p.x <= object.x + object.width && p.y >= object.y && p.y <= object.y + object.height) return object;
       } else {
@@ -412,11 +430,12 @@
     return null;
   }
   function bounds(object) {
-    if (object.type === "image") return { x: object.x, y: object.y, width: object.width, height: object.height };
-    var xs = object.points.map(function (p) { return p.x; }), ys = object.points.map(function (p) { return p.y; });
-    var pad = object.width / 2 + 5, left = Math.min.apply(null, xs) - pad, top = Math.min.apply(null, ys) - pad;
-    return { x: left, y: top, width: Math.max.apply(null, xs) - left + pad, height: Math.max.apply(null, ys) - top + pad };
+    if (object.type === "image") return app.drawing.bounds(object);
+    var cached = boundsCache.get(object);
+    if (cached) return cached;
+    cached = app.drawing.bounds(object); boundsCache.set(object, cached); return cached;
   }
+  function invalidateBounds(object) { if (object && object.type === "stroke") boundsCache.delete(object); }
   function drawStroke(ctx, object, maskPreview) {
     if (!object.points.length) return;
     ctx.save();
@@ -433,22 +452,23 @@
     ctx.stroke();
     ctx.restore();
   }
-  function loadImage(src) {
+  function loadImage(src, refreshCanvas) {
     if (!src) return Promise.resolve(null);
-    if (imageCache[src] && imageCache[src].complete) return Promise.resolve(imageCache[src]);
-    return new Promise(function (resolve) {
-      var image = imageCache[src] || new Image();
-      imageCache[src] = image;
+    var cached = imageCache.get(src);
+    if (cached && cached.complete && cached.naturalWidth) return Promise.resolve(cached);
+    if (refreshCanvas !== false) imageRefresh.add(src);
+    if (imageLoads.has(src)) return imageLoads.get(src);
+    var promise = new Promise(function (resolve) {
+      var image = new Image();
       image.onload = function () {
-        var keep = state.objects.filter(function (object) { return object.type === "image"; }).map(function (object) { return object.src || object.url; });
-        if (state.result) keep.push(state.result.src);
-        var keys = Object.keys(imageCache);
-        keys.slice(0, Math.max(0, keys.length - 12)).forEach(function (key) { if (keep.indexOf(key) < 0) delete imageCache[key]; });
-        resolve(image); render();
+        imageCache.set(src, image); imageLoads.delete(src); resolve(image);
+        if (imageRefresh.has(src)) scheduleRender(true);
+        imageRefresh.delete(src);
       };
-      image.onerror = function () { resolve(null); };
-      if (!image.src) image.src = src;
+      image.onerror = function () { imageLoads.delete(src); imageRefresh.delete(src); resolve(null); };
+      image.src = src;
     });
+    imageLoads.set(src, promise); return promise;
   }
   function drawContained(ctx, image, width, height) {
     var scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
@@ -456,20 +476,37 @@
     ctx.drawImage(image, (width - w) / 2, (height - h) / 2, w, h);
   }
   function drawImageObject(ctx, object) {
-    var image = imageCache[object.src || object.url];
-    if (image && image.complete && image.naturalWidth) ctx.drawImage(image, object.x, object.y, object.width, object.height);
-    else loadImage(object.src || object.url);
+    var source = object.src || object.url;
+    var image = object._imageSource === source && object._image && object._image.complete ? object._image : imageCache.get(source);
+    if (image && image.complete && image.naturalWidth) {
+      object._image = image; object._imageSource = source;
+      ctx.drawImage(image, object.x, object.y, object.width, object.height);
+    } else loadImage(source, true).then(function (loaded) {
+      if (loaded && (object.src || object.url) === source) { object._image = loaded; object._imageSource = source; }
+    });
   }
-  function render() {
-    if (!context) return;
-    context.clearRect(0, 0, WIDTH, WIDTH);
-    selectionContext.clearRect(0, 0, WIDTH, WIDTH);
+  function scheduleRender(changed) {
+    if (changed) contentDirty = true;
+    if (frameTask) frameTask.request();
+  }
+  function rebuildContent() {
     contentContext.clearRect(0, 0, WIDTH, WIDTH);
     state.objects.forEach(function (object) {
+      if (object === drawingObject) return;
       if (object.type === "stroke") drawStroke(contentContext, object, true);
       else drawImageObject(contentContext, object);
+      performance.objectsDrawn += 1;
     });
+    contentDirty = false; performance.contentRebuilds += 1;
+  }
+  function paintFrame() {
+    if (!context) return;
+    performance.frames += 1;
+    if (contentDirty) rebuildContent();
+    context.clearRect(0, 0, WIDTH, WIDTH);
+    selectionContext.clearRect(0, 0, WIDTH, WIDTH);
     context.drawImage(contentCanvas, 0, 0);
+    if (drawingObject) drawStroke(context, drawingObject, true);
     var selected = selectedObjects();
     if (selected.length && !selectionMarquee) {
       var box = selectionBounds(selected);
@@ -492,35 +529,55 @@
       selectionContext.strokeRect(marqueeBox.x, marqueeBox.y, marqueeBox.width, marqueeBox.height);
       selectionContext.restore();
     }
-    document.getElementById("stage-background").style.background = state.background;
-    canvas.style.opacity = String(state.overlayGenerate ? Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))) : 1);
-    app.events.emit("canvas:rendered", { objects: state.objects.length });
+    var opacity = String(state.overlayGenerate ? Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))) : 1);
+    var background = document.getElementById("stage-background");
+    if (lastBackgroundStyle !== state.background) { background.style.background = state.background; lastBackgroundStyle = state.background; }
+    if (lastOpacityStyle !== opacity) { canvas.style.opacity = opacity; lastOpacityStyle = opacity; }
+    var meta = state.objects.length + "|" + state.background + "|" + opacity;
+    if (meta !== lastRenderMeta) { lastRenderMeta = meta; app.events.emit("canvas:rendered", { objects: state.objects.length }); }
+  }
+  function render() {
+    if (!context) return;
+    contentDirty = true;
+    if (frameTask) frameTask.cancel();
+    paintFrame();
+  }
+  function refresh() {
+    if (!context) return;
+    if (frameTask) frameTask.cancel();
+    paintFrame();
   }
   function selectedObject() {
     return state.objects.find(function (object) { return object.id === state.selectedId; }) || null;
   }
   function snapshot() {
-    return JSON.stringify({ objects: state.objects.map(function (object) {
-      var value = app.utils.copy(object); delete value._image; return value;
-    }), background: state.background });
+    var objects = app.drawing.cloneObjects(state.objects);
+    return { objects: objects, background: state.background, _weight: app.drawing.estimateWeight(objects) };
+  }
+  function cloneSnapshot(value) {
+    return { objects: app.drawing.cloneObjects(value && value.objects || []), background: value && value.background || "#ffffff", _weight: value && value._weight || app.drawing.estimateWeight(value && value.objects || []) };
+  }
+  function trimHistory() {
+    while (state.history.length > HISTORY_MAX_ENTRIES) state.history.shift();
+    var weight = state.history.reduce(function (sum, item) { return sum + (item._weight || 0); }, 0);
+    while (state.history.length > 2 && weight > HISTORY_MAX_WEIGHT) { weight -= state.history[0]._weight || 0; state.history.shift(); }
   }
   function restore(value) {
-    var data = app.utils.parseJson(value, { objects: [], background: "#ffffff" });
-    state.objects = data.objects || [];
+    var data = typeof value === "string" ? app.utils.parseJson(value, { objects: [], background: "#ffffff" }) : cloneSnapshot(value);
+    state.objects = app.drawing.cloneObjects(data.objects || []);
     state.background = data.background || "#ffffff";
     setSelection([]);
-    state.objects.forEach(function (object) { if (object.type === "image") loadImage(object.src || object.url); });
+    state.objects.forEach(function (object) { if (object.type === "image") loadImage(object.src || object.url, true); });
     render();
     app.events.emit("history", { undo: state.history.length > 1, redo: state.future.length > 0 });
     emitSelection();
     app.services.store.scheduleCanvasSave();
     app.services.imageEngine.schedule();
   }
-  function resetHistory() { drawingObject = null; dragging = null; resizing = null; pinching = null; selectionGesture = null; selectionMarquee = null; activePointers = {}; state.history = [snapshot()]; state.future = []; app.events.emit("history", { undo: false, redo: false }); }
+  function resetHistory() { drawingObject = null; dragging = null; resizing = null; pinching = null; selectionGesture = null; selectionMarquee = null; activePointers = {}; boundsCache = new WeakMap(); state.history = [snapshot()]; state.future = []; app.events.emit("history", { undo: false, redo: false }); }
   function commit() {
     var next = snapshot();
-    if (state.history[state.history.length - 1] !== next) state.history.push(next);
-    if (state.history.length > 80) state.history.shift();
+    state.history.push(next); trimHistory();
     state.future = [];
     app.events.emit("history", { undo: state.history.length > 1, redo: false });
     emitSelection();
@@ -583,7 +640,7 @@
     var objects = selectedObjects(); if (!objects.length) return;
     var copiedGroups = {};
     var copies = objects.map(function (object) {
-      var copy = app.utils.copy(object); copy.id = app.utils.id(copy.type);
+      var copy = app.drawing.cloneObject(object); copy.id = app.utils.id(copy.type);
       if (copy.groupId) { copiedGroups[copy.groupId] = copiedGroups[copy.groupId] || app.utils.id("group"); copy.groupId = copiedGroups[copy.groupId]; }
       translate(copy, 22, 22); return copy;
     });
@@ -591,7 +648,7 @@
   }
   async function addImage(file) {
     if (!file || !file.url) return;
-    var image = await loadImage(file.url);
+    var image = await loadImage(file.url, false);
     if (!image) throw new Error("无法读取所选图片");
     var scale = Math.min(WIDTH * 0.72 / image.naturalWidth, WIDTH * 0.72 / image.naturalHeight, 1);
     var width = image.naturalWidth * scale, height = image.naturalHeight * scale;
@@ -600,6 +657,7 @@
       logicalFileId: file.logicalFileId || "", name: file.name || "image",
       x: (WIDTH - width) / 2, y: (WIDTH - height) / 2, width: width, height: height
     };
+    object._image = image; object._imageSource = file.url;
     state.objects.push(object);
     setSelection([object.id]);
     state.tool = "select";
@@ -617,7 +675,7 @@
         if (object.tool === "mask" && !includeMask) continue;
         drawStroke(layerContext, object, false);
       } else {
-        var image = await loadImage(object.src || object.url);
+        var image = await loadImage(object.src || object.url, false);
         if (image) layerContext.drawImage(image, object.x, object.y, object.width, object.height);
       }
     }
@@ -640,12 +698,12 @@
       resultGlow: state.resultGlow,
       resultClarity: state.resultClarity,
       resultAdjustmentsEnabled: state.resultAdjustmentsEnabled !== false,
-      objects: app.utils.copy(state.objects)
+      objects: app.drawing.cloneObjects(state.objects)
     };
   }
   async function drawCompositionResult(ctx, composition) {
     if (!composition.resultVisible || !composition.resultSrc) return;
-    var result = await loadImage(composition.resultSrc);
+    var result = await loadImage(composition.resultSrc, false);
     if (!result) return;
     ctx.save(); ctx.globalAlpha = composition.resultOpacity; drawResult(ctx, result, WIDTH, WIDTH, true, composition); ctx.restore();
   }
@@ -668,7 +726,7 @@
   async function snapshotVisible() {
     var composition = captureComposition();
     var output = await renderComposition(composition, WIDTH, true), src = output.toDataURL("image/png");
-    await loadImage(src);
+    await loadImage(src, false);
     var object = { id: app.utils.id("image"), type: "image", url: src, src: src, logicalFileId: "", name: "VibeDraw snapshot", x: 0, y: 0, width: WIDTH, height: WIDTH };
     state.objects.push(object); setSelection([object.id]); state.tool = "select";
     render(); commit(); app.events.emit("tool", "select");
@@ -689,7 +747,7 @@
   function encodeCanvas(output, options) {
     var mime = options.mime || "image/png", quality = Number(options.quality) || 0.82;
     var encoded = output.toDataURL(mime, quality), maxBytes = Number(options.maxBytes) || 0;
-    while (maxBytes && mime === "image/jpeg" && app.utils.dataUrlParts(encoded).bytes.length > maxBytes && quality > 0.45) {
+    while (maxBytes && mime === "image/jpeg" && app.utils.dataUrlByteLength(encoded) > maxBytes && quality > 0.45) {
       quality = Math.max(0.45, quality - 0.1); encoded = output.toDataURL(mime, quality);
     }
     return encoded;
@@ -707,9 +765,7 @@
       ctx.strokeStyle = "white";
     }
     state.objects.filter(function (object) { return object.type === "stroke" && (object.tool === "mask" || object.tool === "eraser"); }).forEach(function (object) {
-      var copy = app.utils.copy(object);
-      copy.color = !openAiAlpha && object.tool === "eraser" ? "black" : "white";
-      copy.opacity = 1; copy.tool = openAiAlpha && object.tool === "mask" ? "eraser" : "brush";
+      var copy = { points: object.points, width: object.width, color: !openAiAlpha && object.tool === "eraser" ? "black" : "white", opacity: 1, tool: openAiAlpha && object.tool === "mask" ? "eraser" : "brush" };
       drawStroke(ctx, copy, false);
     });
     return output.toDataURL("image/png");
@@ -718,7 +774,7 @@
     var bridge = app.platform.hermit.current();
     if (bridge && logicalFileId) return bridge.files.export({ logicalFileId: logicalFileId });
     if (bridge) {
-      var image = await loadImage(src), output = document.createElement("canvas");
+      var image = await loadImage(src, false), output = document.createElement("canvas");
       var dimension = Math.min(1536, image.naturalWidth);
       var encoded;
       do {
@@ -741,7 +797,7 @@
     return exportSource(src, "", "VibeDraw-canvas");
   }
   async function imageDimensions(src) {
-    var image = await loadImage(src);
+    var image = await loadImage(src, false);
     return image ? { width: image.naturalWidth, height: image.naturalHeight } : { width: 0, height: 0 };
   }
   function load(saved) {
@@ -753,7 +809,7 @@
     state.result = saved.result || null;
     setSelection([]);
     state.objects.forEach(function (object) {
-      if (object.type === "image") { object.src = object.src || object.url; loadImage(object.src); }
+      if (object.type === "image") { object.src = object.src || object.url; loadImage(object.src, true); }
     });
     render(); resetHistory();
   }
@@ -761,14 +817,14 @@
     var size = 768, ctx = target.getContext("2d"); target.width = 288; target.height = 288;
     ctx.scale(288 / size, 288 / size); ctx.fillStyle = saved.background || "#fff"; ctx.fillRect(0, 0, size, size);
     if (saved.result && saved.result.asset) {
-      var src = await app.services.assets.resolve(saved.result.asset), result = await loadImage(src);
+      var src = await app.services.assets.resolve(saved.result.asset), result = await loadImage(src, false);
       if (result) drawContained(ctx, result, size, size);
       return;
     }
     var layer = document.createElement("canvas"); layer.width = size; layer.height = size; var layerCtx = layer.getContext("2d");
     for (var object of saved.objects || []) {
       if (object.type === "stroke") { if (object.tool !== "mask") drawStroke(layerCtx, object, false); }
-      else { var image = await loadImage(object.asset ? await app.services.assets.resolve(object.asset) : object.url); if (image) layerCtx.drawImage(image, object.x, object.y, object.width, object.height); }
+      else { var image = await loadImage(object.asset ? await app.services.assets.resolve(object.asset) : object.url, false); if (image) layerCtx.drawImage(image, object.x, object.y, object.width, object.height); }
     }
     ctx.drawImage(layer, 0, 0);
   }
@@ -776,6 +832,7 @@
   app.components.canvas = {
     init: init,
     render: render,
+    refresh: refresh,
     commit: commit,
     undo: undo,
     redo: redo,
@@ -800,6 +857,8 @@
     selectionHandles: function () { return selectionHandles(selectedObjects()); },
     resultFilter: resultFilter,
     resultGlowFilter: resultGlowFilter,
-    syncSharpenFilter: syncSharpenFilter
+    drawResult: drawResult,
+    syncSharpenFilter: syncSharpenFilter,
+    performance: function () { return { frames: performance.frames, contentRebuilds: performance.contentRebuilds, objectsDrawn: performance.objectsDrawn, imageCache: imageCache.stats(), historyEntries: state.history.length, futureEntries: state.future.length }; }
   };
 })(window.vibedraw);

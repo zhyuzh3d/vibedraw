@@ -4,7 +4,7 @@
   var app = global.vibedraw = global.vibedraw || {};
   var listeners = {};
 
-  app.version = "0.3.23";
+  app.version = "0.4.25";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -51,13 +51,14 @@
     selectedIds: [],
     objects: [],
     result: null,
+    renderResult: null,
     busy: false,
     history: [],
     future: []
   };
 
   app.defaults = {
-    schema: 5,
+    schema: 6,
     preferences: { theme: "system", language: "zh" },
     quick: {
       slot: "quick",

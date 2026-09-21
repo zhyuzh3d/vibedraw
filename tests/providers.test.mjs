@@ -38,13 +38,6 @@ assert.equal(internals.aspect(1024, 1024), "1:1");
 assert.equal(internals.aspect(1536, 768), "16:9");
 assert.equal(internals.aspect(768, 1536), "9:16");
 
-const replaced = internals.replaceWorkflow({
-  "1": { inputs: { text: "{{prompt}}", seed: "{{seed}}", note: "size={{width}}x{{height}}" } }
-}, { "{{prompt}}": "蓝色冰雕", "{{seed}}": 42, "{{width}}": 512, "{{height}}": 512 });
-assert.equal(replaced["1"].inputs.text, "蓝色冰雕");
-assert.equal(replaced["1"].inputs.seed, 42);
-assert.equal(replaced["1"].inputs.note, "size=512x512");
-
 const image = internals.jsonImage({ data: [{ b64_json: "YWJj" }], output_format: "png" });
 assert.equal(image.src, "data:image/png;base64,YWJj");
 
@@ -76,7 +69,7 @@ const a1xQuality = internals.a1xPayload({ slot: "quality", model: "flux2_klein_4
 }, "asset_ref");
 assert.equal(a1xQuality.engine_profile, "flux2_klein_4b_base_nvfp4");
 assert.equal(a1xQuality.sampling_steps, 8);
-assert.deepEqual(JSON.parse(JSON.stringify(a1xQuality.output)), { aspect_ratio: "1:1", resolution_tier: "standard1024" });
+assert.deepEqual(JSON.parse(JSON.stringify(a1xQuality.output)), { aspect_ratio: "1:1", resolution_tier: "native" });
 assert.equal(a1xQuality.reference_megapixels, 1);
 assert.ok(a1xQuality.prompt.length > 0, "blank optional UI prompt must use an internal neutral A1X fallback");
 
@@ -120,6 +113,40 @@ assert.equal("scribble_preprocessor" in submitted, false);
 assert.equal(submitted.guidance_scale, 2);
 assert.equal(submitted.output.resolution_tier, "compact512");
 assert.equal(submitted.seed, 7);
+
+const comfyCalls = [];
+context.vibedraw.platform.hermit.request = async options => {
+  comfyCalls.push(options);
+  if (options.url.includes("/view?")) return { status: 200, headers: { "Content-Type": "image/png" }, bodyBase64: "YWJj" };
+  throw new Error("unexpected comfy request " + options.url);
+};
+let comfyPolls = 0;
+context.vibedraw.platform.hermit.requestJson = async options => {
+  comfyCalls.push(options);
+  if (options.method === "POST") return { data: { job_id: "prompt_comfy", state: "queued" } };
+  comfyPolls += 1;
+  return { data: comfyPolls === 1 ? { job_id: "prompt_comfy", state: "running", outputs: [] } : { job_id: "prompt_comfy", state: "succeeded", outputs: [{ filename: "vibedraw.png", subfolder: "", type: "output" }] } };
+};
+const comfyTemplate = {
+  "10": { class_type: "VibeDrawInput", inputs: {} },
+  "11": { class_type: "VibeDrawOutput", inputs: {} }
+};
+const comfyResult = await context.vibedraw.services.providers.generate({
+  slot: "quick", protocol: "comfyui", endpoint: "http://192.168.124.31:8188", apiKey: "comfy-secret",
+  model: "由 workflow 决定", inputMode: "sketch", width: 512, height: 512, steps: 8, timeoutMs: 30000,
+  customHeaders: "", workflow: JSON.stringify(comfyTemplate)
+}, {
+  prompt: "blue crystal", negativePrompt: "blur", seed: 42, strength: 0.73,
+  imageDataUrl: "data:image/png;base64,YWJj", maskDataUrl: "data:image/png;base64,ZEZn"
+});
+assert.equal(comfyResult.src, "data:image/png;base64,YWJj");
+const comfySubmission = JSON.parse(comfyCalls.find(call => call.method === "POST" && call.url.endsWith("/jobs")).bodyText);
+assert.equal(comfySubmission.workflow["10"].class_type, "VibeDrawInput");
+assert.equal(comfySubmission.inputs.ref_strength, 0.73);
+assert.equal(comfySubmission.inputs.steps, 8);
+assert.equal(comfySubmission.image_base64, "data:image/png;base64,YWJj");
+assert.equal(comfySubmission.mask_base64, "data:image/png;base64,ZEZn");
+assert.match(comfyCalls.find(call => call.url.includes("/vibedraw/v1/jobs/prompt_comfy")).url, /prompt_comfy$/);
 
 const strongColor = internals.a1xPayload({ slot: "quick", model: "dreamshaper8_lcm_blended_img2img_sd15", width: 512, steps: 8, guidanceScale: 2 }, {
   prompt: "portrait", negativePrompt: "", seed: 9, strength: 1.2, colorStrength: 0.65

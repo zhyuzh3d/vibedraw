@@ -1,7 +1,8 @@
 (function (app) {
   "use strict";
   async function run() {
-    if (window.location.hash !== "#self-test" || !app.platform.hermit.available()) return;
+    if (window.location.hash !== "#self-test") return;
+    if (!app.platform.hermit.available() && !await app.platform.hermit.awaitReady(2000)) return;
     var runtime = await app.platform.hermit.current().runtime.info();
     if (runtime.launchChannel !== "dev") return;
     var checks = {}, store = app.services.store, canvas = app.components.canvas, editor = app.features.editor, ui = app.components.ui;
@@ -48,7 +49,7 @@
       var groupFirstX = originalStroke.points[0].x, groupSecondX = movedStroke.points[0].x;
       fire("down", .2, .2); fire("move", .26, .25); fire("up", .26, .25);
       checks.groupDrag = originalStroke.points[0].x > groupFirstX + 40 && movedStroke.points[0].x > groupSecondX + 40 && app.state.selectedIds.length === 2;
-      app.state.busy = true; stroke("brush", .4, .4); app.state.busy = false;
+      app.state.busy = true; app.events.emit("generation:start", { slot: "quality" }); stroke("brush", .4, .4); app.events.emit("generation:idle"); app.state.busy = false;
       checks.drawDuringGeneration = app.state.objects.length === 3;
       app.state.size = 60; stroke("mask", .7, .1);
       var mask = new Image(); mask.src = canvas.composeMask(true);
@@ -92,7 +93,10 @@
       app.state.result = { src: imageSrc, slot: "quick", prompt: "self-test", createdAt: Date.now() };
       editor.syncCanvas();
       var resultOpacity = document.getElementById("result-opacity"); resultOpacity.value = "42"; resultOpacity.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(function (resolve) { requestAnimationFrame(resolve); });
       checks.resultOpacity = Math.abs(app.state.resultOpacity - 0.42) < 0.001 && document.getElementById("result-opacity-value").textContent === "42%" && document.getElementById("result-image").style.opacity === "0.42";
+      app.state.resultOpacity = 0.05; app.state.result = { src: imageSrc, slot: "quick", prompt: "self-test", createdAt: Date.now() }; app.events.emit("generation:done", app.state.result); await new Promise(function (resolve) { setTimeout(resolve, 560); });
+      checks.resultOpacityFloor = Math.abs(app.state.resultOpacity - 0.2) < 0.001 && document.getElementById("result-image").style.opacity === "0.2";
       document.getElementById("result-visibility").click(); checks.resultVisibility = app.state.resultVisible === false && document.getElementById("result-image").hidden;
       document.getElementById("result-visibility").click();
       checks.resultOverElements = Number(getComputedStyle(document.getElementById("result-image")).zIndex) > Number(getComputedStyle(document.getElementById("selection-canvas")).zIndex) && getComputedStyle(document.getElementById("result-image")).pointerEvents === "none" && getComputedStyle(document.getElementById("result-image")).touchAction === "none";
@@ -139,8 +143,10 @@
       document.getElementById("color-adjust-enabled").click();
       checks.colorEffectsEnabled = app.state.resultAdjustmentsEnabled === true && canvas.resultFilter() !== "none" && document.getElementById("color-adjust-enabled").getAttribute("aria-pressed") === "true";
       brightnessField.value = "123"; brightnessField.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(function (resolve) { requestAnimationFrame(resolve); });
       checks.liveColorAdjustments = app.state.resultBrightness === 123 && document.querySelector('[data-adjust-output="resultBrightness"]').textContent === "123%" && document.getElementById("result-image").style.filter !== previousFilter;
       var clarityField = document.querySelector('[data-adjust="resultClarity"]'); clarityField.value = "50"; clarityField.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(function (resolve) { requestAnimationFrame(resolve); });
       checks.realSharpening = canvas.resultFilter().indexOf("url(") >= 0 && document.getElementById("vibedraw-sharpen-matrix").getAttribute("kernelMatrix") !== "0 0 0 0 1 0 0 0 0";
       document.getElementById("color-adjust-default").click();
       for (var saveWait = 0; saveWait < 20 && (app.config.canvas.resultBrightness !== 123 || app.config.canvas.resultClarity !== 50); saveWait += 1) await new Promise(function (resolve) { setTimeout(resolve, 25); });
@@ -183,13 +189,21 @@
       try {
         app.state.autoGenerate = true; app.services.imageEngine.schedule = function () { if (app.state.autoGenerate) scheduleCalls += 1; };
         document.getElementById("overlay-toggle").click();
+        await new Promise(function (resolve) { setTimeout(resolve, 220); });
         checks.overlayGenerationSwitch = app.state.overlayGenerate !== originalOverlayGenerate && document.getElementById("overlay-toggle").getAttribute("aria-checked") === "true" && scheduleCalls === 1;
-        checks.overlayResultBelow = app.state.resultOpacity === 1 && Number(getComputedStyle(document.getElementById("result-image")).zIndex) < Number(getComputedStyle(document.getElementById("draft-canvas")).zIndex) && document.getElementById("result-opacity").value === "100" && document.getElementById("opacity-target-label").textContent === "Element layer opacity";
+        checks.overlayResultBelow = Math.abs(app.state.layerOpacity - 0.66) < 0.001 && Number(getComputedStyle(document.getElementById("result-image")).zIndex) < Number(getComputedStyle(document.getElementById("draft-canvas")).zIndex) && document.getElementById("result-opacity").value === "66" && document.getElementById("opacity-target-label").textContent === "Element layer opacity";
         var layerOpacityControl = document.getElementById("result-opacity"); layerOpacityControl.value = "42"; layerOpacityControl.dispatchEvent(new Event("input", { bubbles: true }));
-        checks.overlaySliderTargetsElements = Math.abs(app.state.layerOpacity - 0.42) < 0.001 && app.state.resultOpacity === 1 && document.getElementById("draft-canvas").style.opacity === "0.42" && scheduleCalls === 2;
+        await new Promise(function (resolve) { requestAnimationFrame(resolve); });
+        checks.overlaySliderTargetsElements = Math.abs(app.state.layerOpacity - 0.42) < 0.001 && Math.abs(app.state.resultOpacity - 0.9) < 0.001 && document.getElementById("draft-canvas").style.opacity === "0.42" && scheduleCalls === 2;
         document.getElementById("overlay-toggle").click();
-        checks.standardResultAbove = app.state.overlayGenerate === false && Math.abs(app.state.resultOpacity - 0.9) < 0.001 && document.getElementById("draft-canvas").style.opacity === "1" && Number(getComputedStyle(document.getElementById("result-image")).zIndex) > Number(getComputedStyle(document.getElementById("selection-canvas")).zIndex) && document.getElementById("result-opacity").value === "90" && document.getElementById("opacity-target-label").textContent === "Result opacity" && scheduleCalls === 3;
+        await new Promise(function (resolve) { setTimeout(resolve, 220); });
+        checks.standardResultAbove = app.state.overlayGenerate === false && Math.abs(app.state.resultOpacity - 0.66) < 0.001 && document.getElementById("draft-canvas").style.opacity === "1" && Number(getComputedStyle(document.getElementById("result-image")).zIndex) > Number(getComputedStyle(document.getElementById("selection-canvas")).zIndex) && document.getElementById("result-opacity").value === "66" && document.getElementById("opacity-target-label").textContent === "Result opacity" && scheduleCalls === 3;
       } finally { app.services.imageEngine.schedule = originalSchedule; app.state.autoGenerate = false; }
+      var previousOverlayForVisibility = app.state.overlayGenerate;
+      app.state.overlayGenerate = true; app.state.layerOpacity = 0.05; editor.syncCanvas(); editor.setTool("select");
+      fire("down", .52, .52); fire("up", .52, .52);
+      checks.minimumLayerVisibility = Math.abs(app.state.layerOpacity - 0.2) < 0.001 && document.getElementById("draft-canvas").style.opacity === "0.2" && document.getElementById("result-opacity").value === "20";
+      app.state.overlayGenerate = previousOverlayForVisibility; app.state.layerOpacity = 1; editor.syncCanvas();
       var snapshotCount = app.state.objects.length;
       app.state.resultOpacity = 1; app.state.resultVisible = true; app.state.resultBrightness = 50; app.state.resultSaturation = 0; app.state.resultContrast = 100; app.state.resultHue = 0; app.state.resultGlow = 0; app.state.resultClarity = 0; app.state.resultAdjustmentsEnabled = true;
       var snapshotObject = await canvas.snapshotVisible(), snapshotImage = new Image(); snapshotImage.src = snapshotObject.src;
@@ -200,7 +214,7 @@
       checks.snapshotVisibleEffects = Math.max(snapshotPixel[0], snapshotPixel[1], snapshotPixel[2]) - Math.min(snapshotPixel[0], snapshotPixel[1], snapshotPixel[2]) < 5 && snapshotPixel[0] < 150;
       document.querySelector('[data-tool="brush"]').click();
       checks.directStrokeSliders = Boolean(document.getElementById("brush-size") && document.getElementById("stroke-opacity") && !document.getElementById("brush-more") && !document.getElementById("stroke-opacity-control").hidden);
-      checks.toolHelp = document.getElementById("tool-action-help").textContent.indexOf("Paint color areas") >= 0;
+      checks.toolHelp = document.getElementById("status-line").textContent.indexOf("Paint color areas") >= 0;
       checks.newWorkInMenu = Boolean(document.querySelector('[data-menu="new"]')) && /^(?:Untitled artwork \d+|未命名作品\d+)$/.test(editor.nextUntitledTitle());
       checks.compactWorkHeading = !document.getElementById("new-work") && !document.getElementById("open-history") && Boolean(document.querySelector("#work-settings .fa-gear"));
       app.state.workTitle = "A deliberately very long artwork title that must stay on one line and end with an ellipsis"; editor.syncAll();
@@ -209,7 +223,7 @@
       app.state.workTitle = ""; app.state.prompt = "This prompt must never become the artwork title"; editor.syncAll();
       checks.promptNeverBecomesTitle = /^(?:Untitled artwork \d+|未命名作品\d+)$/.test(app.state.workTitle) && document.getElementById("work-title").textContent === app.state.workTitle && document.getElementById("work-title").textContent !== app.state.prompt;
       checks.canvasActionOrder = Array.prototype.map.call(document.querySelectorAll(".canvas-actions button"), function (button) { return button.id; }).join(",") === "canvas-fullscreen,color-adjust,undo,redo,clear-canvas" && Boolean(document.querySelector("#clear-canvas .fa-trash-can"));
-      checks.canvasHelp = document.querySelectorAll(".canvas-bar [data-help-zh]").length === 6 && document.getElementById("canvas-action-help").textContent.length > 0;
+      checks.canvasHelp = document.querySelectorAll(".canvas-bar [data-help-zh]").length === 6 && document.getElementById("status-line").textContent.length > 0;
       checks.backgroundLabel = document.getElementById("background-color").textContent.trim() === "BG";
       var fullscreenButton = document.getElementById("canvas-fullscreen"); fullscreenButton.click();
       await new Promise(function (resolve) { requestAnimationFrame(resolve); });
@@ -230,18 +244,28 @@
       checks.fullscreenToggleFlush = Math.abs(collapsedToggleRect.bottom - window.innerHeight) < 2 && collapsedToggleStyle.borderBottomLeftRadius === "0px" && collapsedToggleStyle.borderBottomRightRadius === "0px" && collapsedToggleStyle.backgroundColor !== "rgba(0, 0, 0, 0)";
       toolsToggle.click(); await new Promise(function (resolve) { requestAnimationFrame(resolve); });
       checks.fullscreenToolsExpanded = !document.body.classList.contains("fullscreen-tools-collapsed") && toolsToggle.getAttribute("aria-expanded") === "true" && Boolean(toolsToggle.querySelector(".fa-caret-down")) && getComputedStyle(document.querySelector(".drawing-dock")).display !== "none";
-      app.events.emit("canvas:interaction", true); await new Promise(function (resolve) { setTimeout(resolve, 130); });
-      checks.fullscreenInteractionHidesChrome = document.body.classList.contains("canvas-interacting") && Number(getComputedStyle(document.querySelector(".canvas-bar")).opacity) < 0.05 && Number(getComputedStyle(document.getElementById("fullscreen-bottom")).opacity) < 0.05;
+      app.events.emit("canvas:interaction", true); await new Promise(function (resolve) { setTimeout(resolve, 220); });
+      checks.fullscreenInteractionState = document.body.classList.contains("canvas-interacting");
+      checks.fullscreenInteractionHidesTop = Number(getComputedStyle(document.querySelector(".canvas-bar")).opacity) < 0.05;
+      checks.fullscreenInteractionHidesBottom = Number(getComputedStyle(document.getElementById("fullscreen-bottom")).opacity) < 0.05;
       app.events.emit("canvas:interaction", false); await new Promise(function (resolve) { setTimeout(resolve, 130); });
       checks.fullscreenInteractionRestoresChrome = !document.body.classList.contains("canvas-interacting") && Number(getComputedStyle(document.querySelector(".canvas-bar")).opacity) > 0.95 && Number(getComputedStyle(document.getElementById("fullscreen-bottom")).opacity) > 0.95;
       fullscreenButton.click(); await new Promise(function (resolve) { requestAnimationFrame(resolve); }); checks.fullscreenExit = !document.body.classList.contains("canvas-fullscreen") && Boolean(document.querySelector("#canvas-fullscreen .fa-expand"));
       app.components.renderPreview.open({ src: imageSrc, logicalFileId: "", slot: "quality" }); await new Promise(function (resolve) { requestAnimationFrame(resolve); });
-      checks.renderPreview = !document.getElementById("render-preview").hidden && getComputedStyle(document.getElementById("render-preview")).position === "fixed" && getComputedStyle(document.getElementById("render-preview-stage")).touchAction === "none" && Boolean(document.getElementById("render-preview-download") && document.getElementById("render-preview-close"));
+      await new Promise(function (resolve) { setTimeout(resolve, 30); });
+      var preview = document.getElementById("render-preview"), previewTools = document.querySelector(".render-preview-tools");
+      checks.renderPreview = !preview.hidden && getComputedStyle(preview).position === "fixed" && getComputedStyle(preview).width === window.innerWidth + "px" && getComputedStyle(document.getElementById("render-preview-stage")).position === "absolute" && getComputedStyle(document.getElementById("render-preview-stage")).touchAction === "none" && document.getElementById("render-preview-image").hidden && !document.getElementById("render-preview-surface").hidden && document.getElementById("render-preview-surface").width > 0 && Boolean(previewTools && getComputedStyle(previewTools).borderRadius !== "0px" && document.getElementById("render-preview-adjust") && document.querySelectorAll("[data-render-adjust]").length === 6 && document.getElementById("render-preview-download") && document.getElementById("render-preview-reset") && document.getElementById("render-preview-clear") && document.getElementById("render-preview-close"));
       app.components.renderPreview.close();
+      app.state.renderResult = { src: imageSrc, logicalFileId: "", slot: "quality", createdAt: Date.now() }; editor.syncAll();
+      checks.renderResultChrome = !document.getElementById("render-result-trigger").hidden && document.getElementById("render-result-trigger").classList.contains("is-ready") && !document.getElementById("render-notice");
+      app.events.emit("render:clear");
+      checks.renderResultClear = app.state.renderResult === null && document.getElementById("render-result-trigger").hidden;
       checks.colorButtons = document.querySelectorAll('input[type="color"]').length === 0 && getComputedStyle(document.getElementById("background-color")).borderRadius === "50%";
       document.body.classList.remove("keyboard-focus"); document.getElementById("work-settings").focus();
       checks.noTapOutline = getComputedStyle(document.getElementById("work-settings")).outlineStyle === "none";
       checks.brandLeft = document.querySelector(".brand").getBoundingClientRect().left <= 24 && document.getElementById("app-version").textContent === "v" + app.version;
+      var performanceState = canvas.performance(), assetPerformance = app.services.assets.performance();
+      checks.performanceBounds = performanceState.imageCache.entries <= 16 && performanceState.historyEntries <= 60 && assetPerformance.cache.entries <= 10;
       var generate = document.getElementById("generate-quality").getBoundingClientRect();
       checks.actionsVisible = generate.left >= 0 && generate.right <= window.innerWidth && generate.bottom <= window.innerHeight;
       checks.bridgeReady = Boolean(window.hermit.isReady);

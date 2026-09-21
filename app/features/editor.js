@@ -1,17 +1,18 @@
 (function (app) {
   "use strict";
-  var t = app.i18n.text, ui, canvas, initial, imageSource = "";
+  var t = app.i18n.text, ui, canvas, initial, imageSource = "", resizeTask, canvasSyncTask, opacityAnimationFrame = 0, resultOpacityAnimationFrame = 0, renderResultPresent = false, canvasPanX = 0, promptDrag = null;
+  var fullscreenPan = { timer: 0, active: false, moved: false, suppressClick: false, startX: 0, startPan: 0, wasCollapsed: false };
   var adjustmentNames = ["resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity"];
   var neutralAdjustments = { resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
   function node(id) { return document.getElementById(id); }
   function randomSeed() { return Math.floor(Math.random() * 2147483647); }
   function configuredAdjustment(name) { var value = Number(app.config.canvas[name]); return Number.isFinite(value) ? value : neutralAdjustments[name]; }
   function init() {
-    ui = app.components.ui; canvas = app.components.canvas;
+    ui = app.components.ui; canvas = app.components.canvas; resizeTask = app.runtime.createFrameTask(resizeStage); canvasSyncTask = app.runtime.createFrameTask(syncCanvas);
     app.components.gallery.init({ newWork: newWork, resetWork: resetWork, syncAll: syncAll });
     initial = { objects: [], result: null, prompt: "", workId: "", workTitle: "", background: "#ffffff", negativePrompt: app.config.canvas.negativePrompt || "", seed: randomSeed(), seedLocked: true, strength: 0.8, colorStrength: 0.3, autoDelayMs: Number(app.config.canvas.autoDelayMs) || 850, overlayGenerate: false, resultOpacity: 0.9, layerOpacity: 1, resultVisible: true, resultBrightness: configuredAdjustment("resultBrightness"), resultContrast: configuredAdjustment("resultContrast"), resultSaturation: configuredAdjustment("resultSaturation"), resultHue: configuredAdjustment("resultHue"), resultGlow: configuredAdjustment("resultGlow"), resultClarity: configuredAdjustment("resultClarity"), resultAdjustmentsEnabled: app.config.canvas.resultAdjustmentsEnabled !== false };
     node("app-version").textContent = "v" + app.version;
-    bindMenu(); bindTools(); bindOptions(); bindActions(); bindGeneration(); bindActionHelp();
+    bindMenu(); bindTools(); bindOptions(); bindActions(); bindGeneration(); bindPromptControls(); bindActionHelp();
     app.events.on("canvas:rendered", syncCanvas);
     app.events.on("selection", syncSelection);
     app.events.on("tool", setTool);
@@ -28,14 +29,21 @@
     app.events.on("color:changed", syncColors);
     app.events.on("canvas:interaction", function (active) {
       document.body.classList.toggle("canvas-interacting", Boolean(active) && document.body.classList.contains("canvas-fullscreen"));
+      if (active && app.state.overlayGenerate && Number(app.state.layerOpacity) < 0.2) {
+        app.state.layerOpacity = 0.2;
+        syncCanvas();
+        app.services.store.scheduleCanvasSave();
+        status(t("绘制元素可见度已自动恢复到20%", "Drawing layer visibility was restored to 20%"));
+      }
     });
-    syncAll(); resizeStage(); window.addEventListener("resize", resizeStage);
+    syncAll(); resizeStage(); window.addEventListener("resize", function () { resizeTask.request(); });
     window.addEventListener("pagehide", function () { app.services.store.flush().catch(function () {}); });
     document.addEventListener("visibilitychange", function () { if (document.hidden) app.services.store.flush().catch(function () {}); });
   }
   function resizeStage() {
     if (document.body.classList.contains("canvas-fullscreen")) {
       document.documentElement.style.setProperty("--fullscreen-height", Math.max(320, window.innerHeight) + "px");
+      setCanvasPan(canvasPanX);
       return;
     }
     if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
@@ -88,7 +96,7 @@
     node("draw-options").hidden = tool === "select"; node("selection-options").hidden = tool !== "select";
     node("stroke-color").hidden = tool === "eraser" || tool === "mask"; node("stroke-opacity-control").hidden = tool === "eraser" || tool === "mask";
     node("size-label").textContent = tool === "mask" ? t("区域", "Area") : tool === "eraser" ? t("范围", "Size") : t("粗细", "Size");
-    syncSelection(); canvas.render();
+    syncSelection(); canvas.refresh();
   }
   function bindOptions() {
     node("stroke-color").onclick = function () { app.components.settings.openColor("stroke"); };
@@ -98,14 +106,14 @@
     node("result-opacity").oninput = function (event) {
       var value = Number(event.target.value) / 100;
       if (app.state.overlayGenerate) app.state.layerOpacity = value; else app.state.resultOpacity = value;
-      syncCanvas(); app.services.store.scheduleCanvasSave(); if (app.state.overlayGenerate) app.services.imageEngine.schedule();
+      canvasSyncTask.request(); app.services.store.scheduleCanvasSave(); if (app.state.overlayGenerate) app.services.imageEngine.schedule();
     };
     node("result-visibility").onclick = function () { app.state.resultVisible = app.state.resultVisible === false; syncCanvas(); app.services.store.scheduleCanvasSave(); };
     document.querySelectorAll("[data-adjust]").forEach(function (field) {
       field.oninput = function () {
         app.state[field.dataset.adjust] = Number(field.value);
         node("color-adjust-panel").querySelector('[data-adjust-output="' + field.dataset.adjust + '"]').textContent = field.value + field.dataset.suffix;
-        syncCanvas(); app.services.store.scheduleCanvasSave();
+        canvasSyncTask.request(); app.services.store.scheduleCanvasSave();
       };
     });
     node("color-adjust-reset").onclick = function () { applyAdjustments(neutralAdjustments); ui.toast(t("调色参数已重置", "Color adjustments reset")); };
@@ -147,8 +155,9 @@
     };
     node("generate-quick").onclick = function () { app.services.imageEngine.run("quick", false); };
     node("generate-quality").onclick = function () { app.services.imageEngine.run("quality", false); };
+    node("render-result-trigger").onclick = openRenderPreview;
     node("overlay-toggle").onclick = function () {
-      setOverlayGenerate(!app.state.overlayGenerate); app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule();
+      setOverlayGenerate(!app.state.overlayGenerate, true); app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule();
       status(app.state.overlayGenerate ? t("叠加生成已开启", "Overlay generation enabled") : t("叠加生成已关闭", "Overlay generation disabled"));
     };
     node("snapshot-canvas").onclick = ui.action(async function () {
@@ -157,7 +166,7 @@
     node("cancel-generation").onclick = function () { app.services.imageEngine.cancel(); status(t("已停止等待；服务端任务可能仍在运行", "Dismissed; the server task may still be running")); };
     node("work-settings").onclick = function () { app.components.settings.open("work"); };
     node("canvas-fullscreen").onclick = function () { setCanvasFullscreen(!document.body.classList.contains("canvas-fullscreen")); };
-    node("fullscreen-tools-toggle").onclick = function () { setFullscreenToolsCollapsed(!document.body.classList.contains("fullscreen-tools-collapsed")); };
+    bindFullscreenPanToggle();
     node("color-adjust").onclick = toggleAdjustments;
     node("rename-work").onclick = rename;
     node("export-image").onclick = ui.action(async function () {
@@ -196,27 +205,49 @@
     });
     app.events.on("generation:done", function (result) {
       syncCanvas();
-      if (result && result.slot === "quality") { status(t("1024 × 1024 渲染完成，已打开全屏预览", "1024 × 1024 render complete · fullscreen preview opened")); app.components.renderPreview.open(result); }
-      else status(t("成图已返回，正在显示…", "Result received · displaying…"));
+      if (result && result.slot === "quality") { app.state.renderResult = result; syncRenderResult(true); status(t("高清渲染完成，可在画布右下角查看", "High-resolution render complete. View it from the diamond on the canvas.")); }
+      else { animateResultOpacityFloor(); status(t("成图已返回，正在显示…", "Result received · displaying…")); }
     });
     app.events.on("generation:progress", function (message) { node("busy-label").textContent = String(message || ""); status(message); });
     app.events.on("generation:error", function (error) { status(t("生成失败，可修改设置后重试", "Generation failed. Adjust settings and retry.")); app.events.emit("error", error); });
+    app.events.on("render:clear", clearRenderResult);
     app.events.on("generation:idle", function () { node("stage-busy").hidden = true; node("generate-quick").disabled = false; node("generate-quality").disabled = false; });
     app.events.on("needs-config", function () { app.components.settings.open("models"); });
     app.events.on("status", status);
   }
-  function bindActionHelp() {
-    function bind(container, target) {
-      container.addEventListener("click", function (event) {
-        var button = event.target;
-        while (button && button !== container && button.tagName !== "BUTTON") button = button.parentNode;
-        if (!button || button === container || !button.dataset.helpZh) return;
-        node(target).textContent = t(button.dataset.helpZh, button.dataset.helpEn);
-      });
+  function openRenderPreview() { if (app.state.renderResult) app.components.renderPreview.open(app.state.renderResult); }
+  function clearRenderResult() {
+    var hadResult = Boolean(app.state.renderResult);
+    app.components.renderPreview.close(); app.state.renderResult = null; syncRenderResult();
+    if (hadResult) status(t("高清渲染已清除", "High-resolution render cleared"));
+  }
+  var renderResultAnimationToken = 0;
+  function syncRenderResult(forceAnimate) {
+    var present = Boolean(app.state.renderResult && app.state.renderResult.src), trigger = node("render-result-trigger");
+    renderResultAnimationToken += 1;
+    var token = renderResultAnimationToken;
+    trigger.hidden = !present;
+    if (present && forceAnimate && renderResultPresent) {
+      trigger.hidden = true; trigger.classList.remove("is-ready");
+      window.setTimeout(function () {
+        if (token !== renderResultAnimationToken || !app.state.renderResult) return;
+        trigger.hidden = false; trigger.offsetWidth; trigger.classList.add("is-ready");
+      }, 70);
+    } else if (present && !renderResultPresent) {
+      trigger.classList.remove("is-ready");
+      trigger.offsetWidth;
+      trigger.classList.add("is-ready");
     }
-    bind(document.querySelector(".canvas-bar"), "canvas-action-help");
-    bind(document.querySelector(".drawing-dock"), "tool-action-help");
-    bind(document.querySelector(".generation-row"), "status-line");
+    if (!present) trigger.classList.remove("is-ready");
+    renderResultPresent = present;
+  }
+  function bindActionHelp() {
+    document.addEventListener("click", function (event) {
+      var button = event.target;
+      while (button && button !== document.body && button.tagName !== "BUTTON") button = button.parentNode;
+      if (!button || button === document.body || !button.dataset.helpZh) return;
+      status(t(button.dataset.helpZh, button.dataset.helpEn));
+    });
   }
   function syncSelection() {
     var ids = app.state.selectedIds && app.state.selectedIds.length ? app.state.selectedIds : app.state.selectedId ? [app.state.selectedId] : [];
@@ -269,11 +300,45 @@
     var button = node("overlay-toggle"), enabled = Boolean(app.state.overlayGenerate);
     button.setAttribute("aria-checked", String(enabled)); button.classList.toggle("is-active", enabled);
   }
-  function setOverlayGenerate(enabled) {
+  function animateActiveOpacity(target) {
+    var property = app.state.overlayGenerate ? "layerOpacity" : "resultOpacity", control = node("result-opacity"), output = node("result-opacity-value");
+    var from = Number(app.state[property]);
+    if (!Number.isFinite(from)) from = 1;
+    target = Math.max(0, Math.min(1, Number(target)));
+    if (opacityAnimationFrame) (window.cancelAnimationFrame || window.clearTimeout)(opacityAnimationFrame);
+    var requestFrame = window.requestAnimationFrame || function (callback) { return window.setTimeout(function () { callback(Date.now()); }, 16); };
+    var start = null, duration = 180;
+    function step(timestamp) {
+      if (start === null) start = Number(timestamp);
+      var progress = Math.max(0, Math.min(1, (Number(timestamp) - start) / duration));
+      var eased = 1 - Math.pow(1 - progress, 3), value = from + (target - from) * eased;
+      app.state[property] = value; control.value = String(Math.round(value * 100)); output.textContent = control.value + "%"; canvasSyncTask.request();
+      if (progress < 1) opacityAnimationFrame = requestFrame(step);
+      else { app.state[property] = target; control.value = String(Math.round(target * 100)); output.textContent = control.value + "%"; opacityAnimationFrame = 0; app.services.store.scheduleCanvasSave(); canvasSyncTask.request(); }
+    }
+    opacityAnimationFrame = requestFrame(step);
+  }
+  function animateResultOpacityFloor() {
+    var target = 0.2, from = Number(app.state.resultOpacity);
+    if (!Number.isFinite(from) || from >= target) return;
+    if (resultOpacityAnimationFrame) (window.cancelAnimationFrame || window.clearTimeout)(resultOpacityAnimationFrame);
+    var requestFrame = window.requestAnimationFrame || function (callback) { return window.setTimeout(function () { callback(Date.now()); }, 16); };
+    var start = null, duration = 500;
+    function step(timestamp) {
+      if (start === null) start = Number(timestamp);
+      var progress = Math.max(0, Math.min(1, (Number(timestamp) - start) / duration)), eased = 1 - Math.pow(1 - progress, 3);
+      app.state.resultOpacity = from + (target - from) * eased;
+      canvasSyncTask.request();
+      if (progress < 1) resultOpacityAnimationFrame = requestFrame(step);
+      else { app.state.resultOpacity = target; resultOpacityAnimationFrame = 0; app.services.store.scheduleCanvasSave(); canvasSyncTask.request(); }
+    }
+    resultOpacityAnimationFrame = requestFrame(step);
+  }
+  function setOverlayGenerate(enabled, animateOpacity) {
     app.state.overlayGenerate = Boolean(enabled);
-    app.state.resultOpacity = app.state.overlayGenerate ? 1 : 0.9;
     if (!Number.isFinite(Number(app.state.layerOpacity))) app.state.layerOpacity = 1;
     syncOverlayGenerate(); syncCanvas();
+    if (animateOpacity) animateActiveOpacity(0.66);
   }
   function syncSeedLock() {
     if (!Number.isSafeInteger(Number(app.state.seed)) || Number(app.state.seed) < 0) app.state.seed = randomSeed();
@@ -293,6 +358,9 @@
   function setCanvasFullscreen(enabled) {
     var button = node("canvas-fullscreen");
     document.body.classList.remove("canvas-interacting");
+    canvasPanX = 0; document.documentElement.style.setProperty("--fullscreen-pan-x", "0px");
+    fullscreenPan.active = false; fullscreenPan.moved = false; fullscreenPan.suppressClick = false; clearTimeout(fullscreenPan.timer);
+    node("fullscreen-tools-toggle").classList.remove("is-pan-scrollbar");
     setFullscreenToolsCollapsed(false);
     document.body.classList.toggle("canvas-fullscreen", enabled); button.classList.toggle("is-active", enabled); button.setAttribute("aria-pressed", String(enabled));
     button.setAttribute("aria-label", enabled ? t("退出全屏画布", "Exit fullscreen canvas") : t("全屏画布", "Fullscreen canvas"));
@@ -306,6 +374,55 @@
     button.setAttribute("aria-expanded", String(!collapsed));
     button.setAttribute("aria-label", collapsed ? t("展开底部工具", "Expand bottom tools") : t("收起底部工具", "Collapse bottom tools"));
     button.querySelector("i").className = "fa-solid " + (collapsed ? "fa-caret-up" : "fa-caret-down");
+  }
+  function canvasPanLimit() {
+    var frame = node("stage-frame"), side = frame ? frame.getBoundingClientRect().width : 0;
+    return Math.max(0, (side - window.innerWidth) / 2);
+  }
+  function updatePanThumb() {
+    var button = node("fullscreen-tools-toggle"), thumb = button.querySelector(".fullscreen-pan-thumb");
+    if (!fullscreenPan.active || !thumb) return;
+    var limit = canvasPanLimit(), travel = Math.max(0, button.clientWidth - thumb.offsetWidth - 8), ratio = limit ? (canvasPanX + limit) / (limit * 2) : 0.5;
+    thumb.style.transform = "translateX(" + Math.round(travel * ratio) + "px)";
+  }
+  function setCanvasPan(value) {
+    var limit = canvasPanLimit(); canvasPanX = Math.max(-limit, Math.min(limit, Number(value) || 0));
+    document.documentElement.style.setProperty("--fullscreen-pan-x", canvasPanX + "px"); updatePanThumb();
+  }
+  function enterPanScrollbar() {
+    if (!document.body.classList.contains("canvas-fullscreen")) return;
+    var button = node("fullscreen-tools-toggle"); fullscreenPan.active = true; button.classList.add("is-pan-scrollbar");
+    button.setAttribute("aria-label", t("左右拖动画布", "Drag horizontally to move canvas")); updatePanThumb();
+  }
+  function bindFullscreenPanToggle() {
+    var button = node("fullscreen-tools-toggle");
+    button.onclick = function (event) {
+      if (fullscreenPan.suppressClick) { fullscreenPan.suppressClick = false; event.preventDefault(); return; }
+      setFullscreenToolsCollapsed(!document.body.classList.contains("fullscreen-tools-collapsed"));
+    };
+    button.addEventListener("pointerdown", function (event) {
+      if (!document.body.classList.contains("canvas-fullscreen") || (event.button !== undefined && event.button !== 0)) return;
+      fullscreenPan.startX = event.clientX; fullscreenPan.startPan = canvasPanX; fullscreenPan.moved = false; fullscreenPan.suppressClick = false;
+      fullscreenPan.wasCollapsed = document.body.classList.contains("fullscreen-tools-collapsed");
+      clearTimeout(fullscreenPan.timer); fullscreenPan.timer = window.setTimeout(enterPanScrollbar, 450);
+      if (button.setPointerCapture && event.pointerId !== undefined && event.isTrusted) button.setPointerCapture(event.pointerId);
+    });
+    button.addEventListener("pointermove", function (event) {
+      var delta = event.clientX - fullscreenPan.startX;
+      if (!fullscreenPan.active && !fullscreenPan.timer) return;
+      if (!fullscreenPan.active && Math.abs(delta) > 8) { clearTimeout(fullscreenPan.timer); fullscreenPan.timer = 0; fullscreenPan.moved = true; fullscreenPan.suppressClick = true; return; }
+      if (!fullscreenPan.active) return;
+      event.preventDefault(); fullscreenPan.moved = true;
+      var thumb = button.querySelector(".fullscreen-pan-thumb"), travel = Math.max(1, button.clientWidth - (thumb ? thumb.offsetWidth : 56) - 8), limit = canvasPanLimit();
+      setCanvasPan(fullscreenPan.startPan + delta * (limit * 2 / travel));
+    });
+    function end(event) {
+      clearTimeout(fullscreenPan.timer); fullscreenPan.timer = 0;
+      if (fullscreenPan.active) { fullscreenPan.active = false; button.classList.remove("is-pan-scrollbar"); fullscreenPan.suppressClick = true; setFullscreenToolsCollapsed(fullscreenPan.wasCollapsed); }
+      else if (fullscreenPan.moved) fullscreenPan.suppressClick = true;
+      if (event && event.pointerId !== undefined && button.releasePointerCapture && event.isTrusted) button.releasePointerCapture(event.pointerId);
+    }
+    button.addEventListener("pointerup", end); button.addEventListener("pointercancel", end);
   }
   function syncAdjustments() {
     adjustmentNames.forEach(function (name) {
@@ -330,16 +447,46 @@
     node("stroke-color").style.backgroundColor = app.state.color; node("background-color").style.backgroundColor = app.state.background;
     node("stroke-opacity").value = String(Math.round(app.state.opacity * 100)); node("stroke-opacity-value").textContent = node("stroke-opacity").value + "%";
   }
+  function syncPromptStrength() {
+    var value = Math.max(40, Math.min(120, Math.round(Number(app.state.strength || 0.8) * 100)));
+    node("prompt-strength").value = String(value); node("prompt-strength-value").textContent = value + "%";
+  }
+  function setPromptStrength(value) {
+    value = Math.max(40, Math.min(120, Number(value) || 80));
+    app.state.strength = value / 100;
+    node("prompt-strength").value = String(value); node("prompt-strength-value").textContent = value + "%";
+    app.services.store.scheduleCanvasSave();
+  }
+  function bindPromptControls() {
+    var display = node("prompt-display"), strength = node("prompt-strength");
+    display.addEventListener("pointerdown", function (event) {
+      if (event.button !== undefined && event.button !== 0) return;
+      promptDrag = { id: event.pointerId, x: event.clientX, scrollLeft: display.scrollLeft, moved: false };
+      if (display.setPointerCapture && event.pointerId !== undefined && event.isTrusted) display.setPointerCapture(event.pointerId);
+    });
+    display.addEventListener("pointermove", function (event) {
+      if (!promptDrag || promptDrag.id !== event.pointerId) return;
+      var delta = event.clientX - promptDrag.x;
+      if (Math.abs(delta) > 2) promptDrag.moved = true;
+      if (!promptDrag.moved) return;
+      event.preventDefault();
+      display.scrollLeft = promptDrag.scrollLeft - delta;
+    });
+    display.addEventListener("pointerup", function () { promptDrag = null; });
+    display.addEventListener("pointercancel", function () { promptDrag = null; });
+    strength.addEventListener("input", function () { setPromptStrength(strength.value); });
+    node("prompt-strength-default").onclick = function () { setPromptStrength(80); };
+  }
   function syncAll() {
     app.i18n.dom(); syncTitle();
     syncColors(); node("brush-size").value = app.state.size; node("brush-size-value").textContent = app.state.size;
     var promptDisplay = node("prompt-display"), promptText = String(app.state.prompt || "").trim();
-    promptDisplay.textContent = promptText || t("在作品设置中填写画面描述", "Add an image description in Artwork settings"); promptDisplay.classList.toggle("is-placeholder", !promptText);
+    promptDisplay.textContent = promptText || t("在作品设置中填写画面描述", "Add an image description in Artwork settings"); promptDisplay.classList.toggle("is-placeholder", !promptText); syncPromptStrength();
     node("history-count").textContent = app.services.store.list().length;
     node("save-state").textContent = app.services.store.meaningful() ? t("已保存", "Saved") : t("自动保存", "Autosave");
-    syncAuto(); syncOverlayGenerate(); syncSeedLock(); syncAdjustments(); syncCanvas(); setTool(app.state.tool, true); setFullscreenToolsCollapsed(document.body.classList.contains("fullscreen-tools-collapsed")); resizeStage();
+    syncAuto(); syncOverlayGenerate(); syncSeedLock(); syncAdjustments(); syncCanvas(); syncRenderResult(); setTool(app.state.tool, true); setFullscreenToolsCollapsed(document.body.classList.contains("fullscreen-tools-collapsed")); resizeStage();
   }
-  function resetWork() { var next = app.utils.copy(initial); next.seed = randomSeed(); next.seedLocked = true; canvas.load(next); app.state.tool = "pencil"; syncAll(); }
+  function resetWork() { var next = app.utils.copy(initial); next.seed = randomSeed(); next.seedLocked = true; canvas.load(next); app.state.renderResult = null; app.state.tool = "pencil"; syncAll(); }
   function nextUntitledTitle() {
     return app.services.store.nextUntitledTitle();
   }

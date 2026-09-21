@@ -9,6 +9,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, "hermit.json"), "utf
 assert.equal(manifest.schema, 2);
 assert.equal(manifest.happId, "com.zhyuzh.vibedraw");
 assert.ok(Number.isInteger(manifest.version.code) && manifest.version.code > 0);
+assert.equal(manifest.display.orientation, "portrait", "VibeDraw must lock to portrait orientation");
 
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const editorCss = fs.readFileSync(path.join(root, "styles/editor.css"), "utf8");
@@ -16,10 +17,18 @@ const componentsCss = fs.readFileSync(path.join(root, "styles/components.css"), 
 const editorJs = fs.readFileSync(path.join(root, "app/features/editor.js"), "utf8");
 const canvasJs = fs.readFileSync(path.join(root, "app/components/canvas.js"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "app/components/settings.js"), "utf8");
+const uiJs = fs.readFileSync(path.join(root, "app/components/ui.js"), "utf8");
 const imageEngineJs = fs.readFileSync(path.join(root, "app/services/image-engine.js"), "utf8");
 const providersJs = fs.readFileSync(path.join(root, "app/services/providers.js"), "utf8");
 const renderPreviewJs = fs.readFileSync(path.join(root, "app/components/render-preview.js"), "utf8");
+const runtimeJs = fs.readFileSync(path.join(root, "app/core/runtime.js"), "utf8");
+const drawingJs = fs.readFileSync(path.join(root, "app/core/drawing.js"), "utf8");
 assert.ok(html.includes('id="result-opacity"') && html.includes('id="result-visibility"'), "canvas bar must expose result opacity and visibility");
+assert.ok(html.includes('id="choice-layer"') && html.includes('id="choice-options"'), "app must provide a shared in-app choice sheet");
+assert.ok(!html.includes("<select") && !settingsJs.includes("<select") && !componentsCss.includes(".field select"), "app settings must not use native select menus");
+assert.ok(settingsJs.includes("function bindChoices") && settingsJs.includes("ui.openChoice") && settingsJs.includes('select("theme"') && settingsJs.includes('select("language"'), "preference and model choices must use the shared choice sheet");
+assert.ok(uiJs.includes("function openChoice") && uiJs.includes("choice-layer") && uiJs.includes("choice-option"), "choice sheet must render and handle its own option buttons");
+assert.match(componentsCss, /\.choice-layer\{position:fixed;z-index:140;left:0;right:0;top:0;bottom:0\}/, "choice sheet must use Android WebView-compatible viewport bounds");
 assert.ok(!html.includes('id="generation-strength"') && html.includes('id="seed-lock"'), "generation bar must remove the sketch-strength slider and retain seed rolling");
 assert.ok(html.includes('id="overlay-toggle"') && html.includes('id="snapshot-canvas"'), "generation bar must expose overlay and snapshot controls");
 assert.equal((html.match(/data-adjust="result/g) || []).length, 6, "canvas must expose six inline color adjustment sliders");
@@ -29,24 +38,42 @@ assert.ok(html.includes('id="color-adjust-close"') && html.includes('id="color-a
 assert.ok(html.includes('id="seed-value"') && !html.match(/id="seed-lock"[^>]*aria-pressed/), "dice must show the seed and must not be a lock switch");
 assert.ok(html.indexOf('id="generate-quick"') < html.indexOf('id="seed-lock"') && html.indexOf('id="seed-lock"') < html.indexOf('id="generate-quality"'), "seed button must sit between Fast and Quality");
 assert.ok(/id="generate-quality"[\s\S]*data-zh="渲染"/.test(html), "quality action must be presented as Render");
-assert.ok(html.includes('id="render-preview"') && html.includes('id="render-preview-download"') && html.includes('id="render-preview-stage"'), "Render must have a fullscreen preview with download controls");
+assert.ok(html.includes('id="render-preview"') && html.includes('id="render-preview-surface"') && html.includes('id="render-preview-adjust"') && html.includes('id="render-preview-adjustments"') && html.includes('id="render-preview-download"') && html.includes('id="render-preview-reset"') && html.includes('id="render-preview-clear"') && html.includes('id="render-preview-close"') && html.includes('id="render-preview-stage"') && html.includes('role="toolbar"'), "Render must have a fullscreen preview toolbox, adjustment panel, and image stage");
+assert.equal((html.match(/data-render-adjust="result/g) || []).length, 6, "Render preview must expose six live color adjustment sliders");
+assert.ok(html.includes('id="render-preview-adjust-close"') && html.includes('id="render-preview-adjust-reset"') && html.includes('id="render-preview-adjust-default"'), "Render preview adjustments must expose close, reset, and save-default actions");
+assert.ok(html.includes('id="prompt-display"') && html.includes('id="prompt-strength"') && html.includes('id="prompt-strength-default"') && html.includes('id="prompt-strength-value"') && html.includes('min="40" max="120"'), "Main prompt row must expose the bounded image weight control, its percentage, and 80% shortcut");
+assert.ok(html.indexOf('id="render-preview-adjust-default"') < html.indexOf('id="render-preview-adjust-reset"') && html.indexOf('id="render-preview-adjust-reset"') < html.indexOf('id="render-preview-adjust-close"'), "Render preview adjustment actions must be save-default, reset, close");
+assert.ok(!html.includes('id="render-preview-title"') && !html.includes('id="render-preview-meta"') && !html.includes('render-preview-footer'), "Render preview must not show title, resolution, or footer text");
+assert.ok(html.includes('id="render-result-trigger"') && !html.includes('id="render-notice"'), "Render result must use only the animated diamond trigger");
+assert.ok(editorJs.includes('detail.slot === "quality"') && editorJs.includes('node("stage-busy").hidden = false'), "Render progress must show a non-blocking wait layer while the canvas remains editable");
+assert.ok(editorJs.includes('syncRenderResult(true)') && editorJs.includes('trigger.hidden = true') && editorJs.includes('setTimeout(function ()'), "Repeated high-resolution renders must replay the diamond completion animation");
 assert.ok(renderPreviewJs.includes('scale = Math.max(1, Math.min(8') && renderPreviewJs.includes('type: "pan"') && renderPreviewJs.includes('type: "pinch"'), "render preview must support bounded pan and pinch zoom");
+assert.ok(renderPreviewJs.includes("createFrameTask(apply)"), "render preview transforms must be coalesced to animation frames");
+assert.ok(editorJs.includes("promptDrag") && editorJs.includes("display.scrollLeft = promptDrag.scrollLeft - delta"), "main prompt must support press-drag horizontal scrolling");
+assert.ok(editorJs.includes("setPromptStrength(80)") && editorJs.includes("app.state.strength = value / 100"), "main image weight must share the canvas strength and provide an 80% shortcut");
+assert.ok(editorJs.includes('node("prompt-strength-value").textContent = value + "%"') && editorCss.includes('.prompt-strength .icon-button{flex:0 0 24px') && editorCss.includes('margin:0 0 0 1px') && editorCss.includes('margin-left:3px'), "main image weight must use a borderless compact icon, tight gaps, and visible percentage");
+assert.ok(renderPreviewJs.includes('document.getElementById("render-preview-download").onclick') && renderPreviewJs.includes('surface.toDataURL("image/png")') && renderPreviewJs.includes('result = result || current') && renderPreviewJs.includes('surfaceTask.request()') && renderPreviewJs.includes('saveAdjustmentsDefault'), "render preview download and adjustment actions must use the adjusted surface");
 assert.ok(imageEngineJs.includes('config.width = 1024; config.height = 1024; config.inputMode = "sketch"') && imageEngineJs.includes('canvasInput.composeVisibleInput(referenceOptions)') && imageEngineJs.includes('dimensions.width !== 1024'), "Render must submit the visible canvas and require a real 1024 square result");
-assert.ok(providersJs.includes('resolution_tier: dream ? "compact512" : "standard1024"'), "A1X quality render must request its 1024 output tier");
+assert.ok(providersJs.includes('resolution_tier: dream ? "compact512" : "native"'), "A1X quality render must request its 1024 output tier");
 assert.ok(canvasJs.includes('async function exportVisibleCanvas()') && editorJs.includes('canvas.exportVisibleCanvas()') && !editorJs.includes('function exportOptions()'), "toolbar Download must directly export the visible canvas");
 assert.match(editorJs, /seed-lock[\s\S]*generate-quick["']\)\.click\(\)/, "rolling a seed must trigger Fast generation");
 assert.match(editorCss, /\.auto-button,\.generation-button\{[^}]*width:44px;height:44px;flex:0 0 44px/);
 assert.match(editorCss, /\.seed-random-button,\.overlay-generate-button,\.snapshot-button,\.export-button\{[^}]*width:44px;height:44px;flex:0 0 44px/);
+assert.ok(editorCss.includes('#brush-size-value{transform:translateX(-8px)}'), "stroke size output must sit 8px closer to its slider");
 assert.ok(html.includes('id="prompt-display"') && !html.includes('id="prompt-input"') && !html.includes('id="prompt-save"'), "top prompt must be a read-only scrolling summary");
 assert.match(editorCss, /\.prompt-panel\{[^}]*border:0;[^}]*background:transparent/);
+assert.match(editorCss, /\.render-result-trigger\{[^}]*position:absolute;[^}]*right:8px;[^}]*bottom:8px;[^}]*width:34px;height:34px/);
+assert.ok(!editorCss.includes(".render-notice"), "Render must not add a separate bottom notice bar");
 assert.match(editorCss, /\.work-name span\{[^}]*text-overflow:ellipsis;white-space:nowrap/);
+assert.match(editorCss, /\.work-name\{[^}]*flex:0 1 auto;[^}]*max-width:calc\(100% - 112px\)/, "title button must size to its text so the pencil follows the title");
+assert.ok(editorJs.includes('node("rename-work").onclick = rename'), "title and its pencil must share the rename action");
 assert.ok(!editorJs.includes("app.state.prompt.slice") && !fs.readFileSync(path.join(root, "app/services/store.js"), "utf8").includes("snapshot.prompt.slice"), "prompt text must never become an artwork title");
 assert.ok(!editorJs.includes('node("generation-strength")') && editorJs.includes('node("overlay-toggle")'), "editor must bind overlay instead of the removed strength slider");
 assert.ok(settingsJs.includes('class="toggle-switch" name="overlayGenerate" type="checkbox" role="switch"'), "artwork overlay setting must use the common switch control");
 assert.ok(canvasJs.includes("async function snapshotVisible()") && canvasJs.includes("renderComposition(composition, WIDTH, true)") && canvasJs.includes("width: WIDTH, height: WIDTH"), "snapshot must flatten the current visible layer order into a full-canvas image element");
 assert.ok(canvasJs.includes("composition.layerOpacity") && canvasJs.includes("if (composition.overlayGenerate)") && canvasJs.includes("if (visibleSnapshot) await drawCompositionResult"), "composition must place the result below translucent elements only in overlay mode");
 assert.ok(canvasJs.includes('marqueeOnDrag: Boolean(hit && hit.type === "image" && !hitAlreadySelected)') && canvasJs.includes('!selectionGesture.marqueeOnDrag'), "dragging from an unselected image must start a marquee instead of moving the image");
-assert.ok(editorJs.includes('image.style.zIndex = overlay ? "1" : "4"') && editorJs.includes('state.resultOpacity = app.state.overlayGenerate ? 1 : 0.9'), "display mode must swap result layering and reset its opacity");
+assert.ok(editorJs.includes('image.style.zIndex = overlay ? "1" : "4"') && editorJs.includes('animateActiveOpacity(0.66)'), "display mode must swap result layering and animate opacity to 66%");
 assert.ok(editorJs.includes('app.state.layerOpacity = value') && editorJs.includes('app.state.resultOpacity = value'), "top opacity slider must target the active layer");
 assert.match(editorJs, /snapshot-canvas[\s\S]*canvas\.snapshotVisible\(\)/);
 assert.ok(html.includes('id="vibedraw-sharpen-matrix"'), "clarity must use a real sharpening convolution filter");
@@ -55,7 +82,7 @@ assert.ok(html.includes('id="fullscreen-tools-toggle"'), "fullscreen bottom tool
 assert.ok(html.includes('id="modal-actions"'), "modal shell must provide an action area outside scrolling content");
 assert.match(editorCss, /body\.canvas-fullscreen \.canvas-bar\{position:fixed;/);
 assert.match(editorCss, /body\.canvas-fullscreen \.fullscreen-bottom\{position:fixed;/);
-assert.ok(editorCss.includes('body.canvas-fullscreen.canvas-interacting .canvas-bar,body.canvas-fullscreen.canvas-interacting .canvas-action-help{opacity:0;'));
+assert.ok(!html.includes('id="canvas-action-help"') && !html.includes('id="tool-action-help"') && editorJs.includes('document.addEventListener("click"') && editorJs.includes('status(t(button.dataset.helpZh'), "all action help must use the shared status line");
 assert.match(editorCss, /body\.canvas-fullscreen\.canvas-interacting \.fullscreen-bottom\{opacity:0;/);
 assert.match(editorCss, /body\.canvas-fullscreen\.fullscreen-tools-collapsed \.fullscreen-bottom\{[^}]*background:none;[^}]*pointer-events:none/);
 assert.match(editorCss, /body\.canvas-fullscreen \.fullscreen-tools-toggle\{[^}]*top:36px;[^}]*width:48px;height:38px;[^}]*border-radius:9px 9px 0 0;[^}]*backdrop-filter:blur\(16px\)/);
@@ -70,7 +97,13 @@ assert.ok(!settingsJs.includes('range("colorStrength"') && settingsJs.includes('
 assert.ok(canvasJs.includes('"colorStrength"'), "color strength must be restored with artwork canvas state");
 assert.ok(html.includes('id="stroke-opacity"'), "drawing tools must expose direct stroke opacity");
 assert.ok(html.includes('id="background-color"') && html.includes('<span aria-hidden="true">BG</span>') && editorCss.includes('.bg-control span{'), "background color control must show a centered BG label");
-assert.ok(html.includes('id="canvas-action-help"') && html.includes('id="tool-action-help"') && (html.match(/data-help-zh=/g) || []).length >= 20 && editorJs.includes('function bindActionHelp()'), "canvas, drawing, and generation actions must explain their effect after a click");
+assert.ok(html.includes('id="status-line"') && (html.match(/data-help-zh=/g) || []).length >= 20 && editorJs.includes('function bindActionHelp()'), "canvas, drawing, and generation actions must explain their effect in the shared status line");
+assert.ok(editorJs.includes('app.state.layerOpacity = 0.2') && editorJs.includes('Number(app.state.layerOpacity) < 0.2'), "Canvas interaction must restore a hidden overlay drawing layer to 20% visibility");
+assert.ok(editorJs.includes('function animateResultOpacityFloor()') && editorJs.includes('duration = 500') && editorJs.includes('app.state.resultOpacity = from +'), "Fast and rolled-seed results must animate opacity back to 20% when hidden");
+assert.match(editorCss, /\.stage-busy\{[^}]*pointer-events:none\}/, "Generation wait layer must pass pointer input through to the canvas");
+assert.ok(componentsCss.includes(".render-preview{position:fixed;z-index:1000") && componentsCss.includes(".render-preview{position:fixed!important") && componentsCss.includes("width:100vw!important") && componentsCss.includes(".render-preview-stage{position:absolute!important;inset:0!important") && componentsCss.includes("height:100%!important") && componentsCss.includes("gap:10px!important") && componentsCss.includes("background:transparent!important") && componentsCss.includes("backdrop-filter:blur(18px) saturate(1.45) contrast(1.2)"), "fullscreen render preview must stay above app chrome with a fixed frosted toolbar");
+assert.ok(componentsCss.includes("contrast(2) brightness(1)!important") && editorCss.includes("contrast(2) brightness(1)!important"), "fullscreen frosted surfaces must use the high-contrast 2.0 brightness treatment");
+assert.ok(html.includes('class="fullscreen-pan-thumb"') && editorJs.includes("bindFullscreenPanToggle") && editorJs.includes("canvasPanLimit") && editorJs.includes("is-pan-scrollbar"), "Fullscreen toggle must support long-press horizontal canvas panning");
 assert.ok(settingsJs.includes('range("colorOpacity"') && settingsJs.includes('object.opacity = opacity') && settingsJs.includes('app.state.opacity = opacity'), "color dialogs must apply opacity to the active stroke tool or selected strokes");
 assert.match(componentsCss, /\.color-slider-stack \.field\{margin-bottom:5px\}/, "color sliders must use the compact vertical stack");
 assert.ok(!html.includes('id="brush-more"'), "stroke opacity must not be hidden behind a modal button");
@@ -79,6 +112,9 @@ assert.match(editorCss, /\.draft-canvas\{z-index:2;/);
 assert.match(editorCss, /\.selection-canvas\{z-index:3;[^}]*pointer-events:none/);
 assert.match(editorCss, /\.result-image\{z-index:4;[^}]*pointer-events:none;touch-action:none/);
 assert.ok(!html.includes('id="stage-badge"'), "canvas must not show a preview badge");
+assert.ok(runtimeJs.includes("function createFrameTask") && runtimeJs.includes("function createLru"), "runtime must provide shared frame scheduling and bounded caches");
+assert.ok(drawingJs.includes("function cloneObjects") && drawingJs.includes("function estimateWeight"), "drawing data operations must avoid JSON cloning and support bounded history");
+assert.ok(canvasJs.includes("contentCanvas") && canvasJs.includes("scheduleRender") && canvasJs.includes("HISTORY_MAX_WEIGHT"), "canvas must use cached content, frame scheduling, and bounded undo history");
 const references = [...html.matchAll(/(?:src|href)="([^"#]+)"/g)].map(match => match[1]);
 for (const reference of references) {
   if (reference.startsWith("/__hermit/") || reference.startsWith("data:")) continue;
@@ -88,6 +124,8 @@ for (const reference of references) {
 
 const scriptOrder = references.filter(value => value.endsWith(".js"));
 assert.equal(scriptOrder[0], "./app/core/namespace.js");
+assert.ok(scriptOrder.indexOf("./app/core/runtime.js") < scriptOrder.indexOf("./app/services/assets.js"));
+assert.ok(scriptOrder.indexOf("./app/core/drawing.js") < scriptOrder.indexOf("./app/components/canvas.js"));
 assert.equal(scriptOrder.at(-1), "./app/app.js");
 
 const sourceFiles = [];
@@ -112,6 +150,8 @@ for (const file of sourceFiles) {
 
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/providers.test.mjs")], { stdio: "inherit" });
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/workspace.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/performance.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/assets.test.mjs")], { stdio: "inherit" });
 if (!process.argv.includes("--source-only") && fs.existsSync(path.join(root, "hermit-install.json"))) {
   childProcess.execFileSync("python3", [path.join(root, "tools/package.py"), "--check"], { stdio: "inherit" });
 }

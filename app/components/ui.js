@@ -1,21 +1,23 @@
 (function (app) {
   "use strict";
-  var layer, content, actions, lastFocus, beforeClose, confirmResolve, confirmFocus;
+  var layer, content, actions, lastFocus, beforeClose, confirmResolve, confirmFocus, choiceLayer, choiceSheet, choiceTitle, choiceOptions, choiceFocus;
   var t = app.i18n.text;
   function init() {
     layer = document.getElementById("modal-layer"); content = document.getElementById("modal-content"); actions = document.getElementById("modal-actions");
+    choiceLayer = document.getElementById("choice-layer"); choiceSheet = choiceLayer.querySelector(".choice-sheet"); choiceTitle = document.getElementById("choice-title"); choiceOptions = document.getElementById("choice-options");
     document.addEventListener("keydown", function (event) { if (event.key === "Tab") document.body.classList.add("keyboard-focus"); });
     ["pointerdown", "mousedown", "touchstart"].forEach(function (name) { document.addEventListener(name, function () { document.body.classList.remove("keyboard-focus"); }, { passive: true }); });
     layer.querySelectorAll("[data-close-modal]").forEach(function (node) { node.addEventListener("click", requestClose); });
+    choiceLayer.querySelectorAll("[data-close-choice]").forEach(function (node) { node.addEventListener("click", closeChoice); });
     document.getElementById("confirm-cancel").onclick = function () { resolveConfirm(false); };
     document.getElementById("confirm-ok").onclick = function () { resolveConfirm(true); };
     document.getElementById("confirm-layer").querySelector(".modal-backdrop").onclick = function () { resolveConfirm(false); };
     document.addEventListener("keydown", function (event) {
-      var active = !document.getElementById("confirm-layer").hidden ? document.getElementById("confirm-layer") : !layer.hidden ? layer : null;
+      var active = !document.getElementById("confirm-layer").hidden ? document.getElementById("confirm-layer") : !choiceLayer.hidden ? choiceLayer : !layer.hidden ? layer : null;
       if (!active) return;
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); confirmResolve ? resolveConfirm(false) : requestClose(); }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (confirmResolve) resolveConfirm(false); else if (!choiceLayer.hidden) closeChoice(); else requestClose(); }
       if (event.key === "Tab") {
-        var nodes = Array.prototype.filter.call(active.querySelectorAll("button, input, textarea, select, [tabindex='0']"), function (node) { return !node.disabled && node.offsetParent !== null; });
+        var nodes = Array.prototype.filter.call(active.querySelectorAll("button, input, textarea, [tabindex='0']"), function (node) { return !node.disabled && node.offsetParent !== null; });
         if (!nodes.length) { event.preventDefault(); return; }
         var first = nodes[0], last = nodes[nodes.length - 1];
         if (event.shiftKey && (document.activeElement === first || !active.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
@@ -39,10 +41,31 @@
   async function requestClose() { if (!beforeClose || await beforeClose()) close(); }
   function close() {
     if (!layer || layer.hidden) return;
+    closeChoice(false);
     layer.hidden = true; content.innerHTML = ""; actions.innerHTML = ""; actions.hidden = true; beforeClose = null;
     document.body.style.overflow = "";
     if (lastFocus && lastFocus.isConnected) lastFocus.focus({ preventScroll: true });
     lastFocus = null;
+  }
+  function openChoice(options) {
+    choiceFocus = document.activeElement; choiceTitle.textContent = options.title || ""; choiceOptions.innerHTML = "";
+    var selected = null;
+    (options.choices || []).forEach(function (choice) {
+      var value = String(choice[0]), label = String(choice[1]), button = document.createElement("button"), labelNode = document.createElement("span");
+      button.type = "button"; button.className = "choice-option" + (String(options.value) === value ? " is-selected" : "");
+      labelNode.textContent = label; button.appendChild(labelNode);
+      if (String(options.value) === value) { var check = document.createElement("i"); check.className = "fa-solid fa-check"; check.setAttribute("aria-hidden", "true"); button.appendChild(check); selected = button; }
+      button.onclick = function () { closeChoice(false); if (options.onSelect) options.onSelect(value, label); };
+      choiceOptions.appendChild(button);
+    });
+    choiceLayer.hidden = false;
+    var target = selected || choiceOptions.querySelector("button"); if (target) target.focus({ preventScroll: true });
+  }
+  function closeChoice(restoreFocus) {
+    if (!choiceLayer || choiceLayer.hidden) return;
+    choiceLayer.hidden = true; choiceOptions.innerHTML = "";
+    if (restoreFocus !== false && choiceFocus && choiceFocus.isConnected) choiceFocus.focus({ preventScroll: true });
+    choiceFocus = null;
   }
   function confirm(options) {
     if (confirmResolve) resolveConfirm(false);
@@ -83,5 +106,5 @@
       finally { if (button && button.isConnected) button.disabled = Boolean(wasDisabled); }
     };
   }
-  app.components.ui = { init: init, open: open, close: close, requestClose: requestClose, confirm: confirm, toast: toast, action: action };
+  app.components.ui = { init: init, open: open, close: close, requestClose: requestClose, openChoice: openChoice, closeChoice: closeChoice, confirm: confirm, toast: toast, action: action };
 })(window.vibedraw);

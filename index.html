@@ -37,6 +37,7 @@
       </div>
       <section class="prompt-panel">
         <div class="prompt-readonly" id="prompt-display" role="text" tabindex="0" data-zh="画面描述，在作品设置中编辑" data-en="Image description, edit in Artwork settings" data-i18n-attr="aria-label"></div>
+        <div class="prompt-strength"><button class="icon-button" id="prompt-strength-default" type="button" data-zh="将图像权重设为80%" data-en="Set image weight to 80%" data-i18n-attr="aria-label"><i class="fa-regular fa-image" aria-hidden="true"></i></button><input id="prompt-strength" type="range" min="40" max="120" value="80" data-zh="图像权重" data-en="Image weight" data-i18n-attr="aria-label"><output id="prompt-strength-value">80%</output></div>
       </section>
       <section class="canvas-area" aria-label="Canvas">
         <div class="canvas-bar">
@@ -52,7 +53,6 @@
             <button class="icon-button" id="clear-canvas" data-zh="清空草稿" data-en="Clear sketch" data-i18n-attr="aria-label" data-help-zh="删除全部画布元素，AI 成图会保留。" data-help-en="Remove all canvas elements while keeping the AI result."><i class="fa-regular fa-trash-can"></i></button>
           </div>
         </div>
-        <p class="action-help canvas-action-help" id="canvas-action-help" aria-live="polite"></p>
         <div class="stage-section"><div class="stage-frame" id="stage-frame">
           <div class="stage-background" id="stage-background"></div>
           <img id="result-image" class="result-image" alt="AI result" hidden>
@@ -60,6 +60,7 @@
           <canvas id="draft-canvas" class="draft-canvas" width="768" height="768" aria-label="Drawing canvas"></canvas>
           <canvas id="selection-canvas" class="selection-canvas" width="768" height="768" aria-hidden="true"></canvas>
           <div class="stage-empty" id="stage-empty"><i class="fa-solid fa-pen-nib"></i><strong data-zh="从一笔开始" data-en="Start with a stroke">从一笔开始</strong><span data-zh="简单的线条，也有无限可能" data-en="A simple shape. Endless possibilities.">简单的线条，也有无限可能</span></div>
+          <button class="render-result-trigger" id="render-result-trigger" type="button" hidden data-zh="查看高清渲染" data-en="View high-resolution render" data-i18n-attr="aria-label" data-help-zh="打开高清渲染全屏预览。" data-help-en="Open the high-resolution render in fullscreen preview."><i class="fa-regular fa-gem" aria-hidden="true"></i></button>
           <div class="stage-busy" id="stage-busy" hidden><span class="spinner"></span><span id="busy-label"></span><button id="cancel-generation" data-zh="停止等待" data-en="Dismiss">停止等待</button></div>
         </div></div>
         <div class="color-adjust-panel" id="color-adjust-panel" hidden>
@@ -73,7 +74,7 @@
         </div>
       </section>
       <div class="fullscreen-bottom" id="fullscreen-bottom">
-      <button class="fullscreen-tools-toggle" id="fullscreen-tools-toggle" type="button" aria-expanded="true" data-zh="收起底部工具" data-en="Collapse bottom tools" data-i18n-attr="aria-label"><i class="fa-solid fa-caret-down" aria-hidden="true"></i></button>
+      <button class="fullscreen-tools-toggle" id="fullscreen-tools-toggle" type="button" aria-expanded="true" data-zh="收起底部工具" data-en="Collapse bottom tools" data-i18n-attr="aria-label"><i class="fa-solid fa-caret-down" aria-hidden="true"></i><span class="fullscreen-pan-thumb" aria-hidden="true"></span></button>
       <section class="drawing-dock">
         <nav class="tool-group" aria-label="Drawing tools">
           <button class="tool-button" data-tool="select" data-help-zh="选择、框选、移动、缩放或组合画布对象。" data-help-en="Select, marquee, move, resize, or group canvas objects."><i class="fa-solid fa-arrow-pointer"></i><span data-zh="选择" data-en="Select">选择</span></button>
@@ -101,7 +102,6 @@
             <button class="icon-button danger" id="delete-selected" data-zh="删除对象" data-en="Delete object" data-i18n-attr="aria-label" data-help-zh="删除当前所选对象。" data-help-en="Delete the selected objects."><i class="fa-regular fa-trash-can"></i></button>
           </div></div>
         </div>
-        <p class="action-help tool-action-help" id="tool-action-help" aria-live="polite"></p>
       </section>
       <div class="generation-row">
         <button class="auto-button" id="auto-toggle" aria-pressed="true" data-help-zh="切换落笔停止后是否自动调用快速模型。" data-help-en="Toggle automatic Fast generation after drawing stops."><i class="fa-solid fa-bolt"></i><span></span></button>
@@ -119,13 +119,22 @@
   </div>
   <div class="modal-layer" id="modal-layer" hidden><div class="modal-backdrop" data-close-modal></div><section class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="sheet-handle"></div><header class="modal-header"><div><span class="eyebrow" id="modal-eyebrow"></span><h2 id="modal-title"></h2></div><button class="icon-button" data-close-modal data-zh="关闭" data-en="Close" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark"></i></button></header><div class="modal-content" id="modal-content"></div><footer class="modal-actions" id="modal-actions" hidden></footer></section></div>
   <div class="modal-layer confirm-layer" id="confirm-layer" hidden><div class="modal-backdrop"></div><section class="modal-sheet centered" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" tabindex="-1"><header class="modal-header"><h2 id="confirm-title"></h2></header><div class="modal-content"><p id="confirm-message"></p><div class="button-row"><button class="button button-secondary" id="confirm-cancel"></button><button class="button button-primary" id="confirm-ok"></button></div></div></section></div>
-  <section class="render-preview" id="render-preview" role="dialog" aria-modal="true" aria-labelledby="render-preview-title" hidden>
-    <header class="render-preview-header"><div><strong id="render-preview-title" data-zh="高清渲染" data-en="High-resolution render">高清渲染</strong><small id="render-preview-meta">1024 × 1024</small></div><div><button class="icon-button" id="render-preview-download" data-zh="下载渲染大图" data-en="Download render" data-i18n-attr="aria-label"><i class="fa-solid fa-download"></i></button><button class="icon-button" id="render-preview-close" data-zh="关闭预览" data-en="Close preview" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark"></i></button></div></header>
-    <div class="render-preview-stage" id="render-preview-stage"><img id="render-preview-image" alt="High-resolution AI render" draggable="false"></div>
-    <footer class="render-preview-footer"><span id="render-preview-zoom">100%</span><span data-zh="双指缩放 · 单指拖动" data-en="Pinch to zoom · drag to pan">双指缩放 · 单指拖动</span></footer>
+  <div class="choice-layer" id="choice-layer" hidden><div class="choice-backdrop" data-close-choice></div><section class="choice-sheet" role="dialog" aria-modal="true" aria-labelledby="choice-title" tabindex="-1"><div class="sheet-handle"></div><header class="choice-header"><h2 id="choice-title"></h2><button class="icon-button" data-close-choice data-zh="关闭" data-en="Close" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></header><div class="choice-options" id="choice-options"></div></section></div>
+  <section class="render-preview" id="render-preview" role="dialog" aria-modal="true" aria-label="Render preview" hidden>
+    <div class="render-preview-stage" id="render-preview-stage"><img id="render-preview-image" alt="High-resolution AI render" draggable="false" hidden><canvas id="render-preview-surface" aria-label="Adjusted high-resolution render" hidden></canvas></div>
+    <div class="render-preview-tools" role="toolbar" aria-label="Render preview tools"><button class="icon-button" id="render-preview-adjust" aria-expanded="false" aria-controls="render-preview-adjustments" data-zh="调色渲染图" data-en="Adjust render colors" data-i18n-attr="aria-label"><i class="fa-solid fa-palette"></i></button><button class="icon-button" id="render-preview-download" data-zh="下载渲染大图" data-en="Download render" data-i18n-attr="aria-label"><i class="fa-solid fa-download"></i></button><button class="icon-button" id="render-preview-reset" data-zh="复位图片" data-en="Reset image" data-i18n-attr="aria-label"><i class="fa-solid fa-rotate-left"></i></button><button class="icon-button danger" id="render-preview-clear" data-zh="清除高清渲染" data-en="Clear high-resolution render" data-i18n-attr="aria-label"><i class="fa-solid fa-trash-can"></i></button><button class="icon-button" id="render-preview-close" data-zh="关闭预览" data-en="Close preview" data-i18n-attr="aria-label"><i class="fa-solid fa-xmark"></i></button></div>
+    <div class="render-preview-adjustments" id="render-preview-adjustments" hidden>
+      <label class="color-adjust-item"><span><span data-zh="亮度" data-en="Brightness">亮度</span><output data-render-adjust-output="resultBrightness">100%</output></span><input data-render-adjust="resultBrightness" type="range" min="40" max="180" value="100" data-suffix="%"></label>
+      <label class="color-adjust-item"><span><span data-zh="对比度" data-en="Contrast">对比度</span><output data-render-adjust-output="resultContrast">100%</output></span><input data-render-adjust="resultContrast" type="range" min="40" max="180" value="100" data-suffix="%"></label>
+      <label class="color-adjust-item"><span><span data-zh="饱和度" data-en="Saturation">饱和度</span><output data-render-adjust-output="resultSaturation">100%</output></span><input data-render-adjust="resultSaturation" type="range" min="0" max="220" value="100" data-suffix="%"></label>
+      <label class="color-adjust-item"><span><span data-zh="色相" data-en="Hue">色相</span><output data-render-adjust-output="resultHue">0°</output></span><input data-render-adjust="resultHue" type="range" min="-180" max="180" value="0" data-suffix="°"></label>
+      <label class="color-adjust-item"><span><span data-zh="梦幻辉光" data-en="Dream glow">梦幻辉光</span><output data-render-adjust-output="resultGlow">0%</output></span><input data-render-adjust="resultGlow" type="range" min="0" max="100" value="0" data-suffix="%"></label>
+      <label class="color-adjust-item"><span><span data-zh="清晰度" data-en="Sharpness">清晰度</span><output data-render-adjust-output="resultClarity">0%</output></span><input data-render-adjust="resultClarity" type="range" min="0" max="100" value="0" data-suffix="%"></label>
+      <div class="render-preview-adjust-actions"><button class="button button-primary" id="render-preview-adjust-default" data-zh="保存默认" data-en="Save default">保存默认</button><button class="button button-secondary" id="render-preview-adjust-reset" data-zh="重置" data-en="Reset">重置</button><button class="button button-secondary" id="render-preview-adjust-close" data-zh="关闭" data-en="Close">关闭</button></div>
+    </div>
   </section>
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
-  <script src="./app/core/namespace.js"></script><script src="./app/core/utils.js"></script><script src="./app/core/i18n.js"></script>
+  <script src="./app/core/namespace.js"></script><script src="./app/core/utils.js"></script><script src="./app/core/runtime.js"></script><script src="./app/core/drawing.js"></script><script src="./app/core/i18n.js"></script>
   <script src="./app/platform/hermit.js"></script><script src="./app/services/assets.js"></script><script src="./app/services/store.js"></script><script src="./app/services/providers.js"></script><script src="./app/services/image-engine.js"></script>
   <script src="./app/components/ui.js"></script><script src="./app/components/canvas.js"></script><script src="./app/components/render-preview.js"></script><script src="./app/components/settings.js"></script><script src="./app/components/gallery.js"></script>
   <script src="./app/features/editor.js"></script><script src="./app/features/self-test.js"></script><script src="./app/app.js"></script>

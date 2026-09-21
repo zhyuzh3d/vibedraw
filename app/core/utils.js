@@ -75,6 +75,28 @@
     for (var index = 0; index < encoded.length; index += 1) bytes[index] = encoded.charCodeAt(index);
     return bytes;
   }
+  function utf8Length(value) {
+    var text = String(value || ""), length = 0;
+    for (var index = 0; index < text.length; index += 1) {
+      var code = text.charCodeAt(index);
+      if (code < 0x80) length += 1;
+      else if (code < 0x800) length += 2;
+      else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length && text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) { length += 4; index += 1; }
+      else length += 3;
+    }
+    return length;
+  }
+  function utf8Chunks(value, maximumBytes) {
+    var text = String(value || ""), limit = Math.max(1024, Number(maximumBytes) || 48000), chunks = [], start = 0, bytes = 0;
+    for (var index = 0; index < text.length; index += 1) {
+      var code = text.charCodeAt(index), size = code < 0x80 ? 1 : code < 0x800 ? 2 : code >= 0xd800 && code <= 0xdbff && index + 1 < text.length && text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff ? 4 : 3;
+      if (bytes && bytes + size > limit) { chunks.push(text.slice(start, index)); start = index; bytes = 0; }
+      bytes += size;
+      if (size === 4) { index += 1; }
+    }
+    if (start < text.length || !chunks.length) chunks.push(text.slice(start));
+    return chunks;
+  }
   function concatBytes(parts) {
     var total = parts.reduce(function (sum, part) { return sum + part.length; }, 0);
     var output = new Uint8Array(total), offset = 0;
@@ -85,6 +107,11 @@
     var match = /^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,(.+)$/i.exec(String(dataUrl || ""));
     if (!match) throw new Error("画布图像格式异常");
     return { mime: match[1] || "image/png", base64: match[2], bytes: base64ToBytes(match[2]) };
+  }
+  function dataUrlByteLength(dataUrl) {
+    var value = String(dataUrl || ""), comma = value.indexOf(","), base64 = comma >= 0 ? value.slice(comma + 1) : value;
+    var padding = /==$/.test(base64) ? 2 : /=$/.test(base64) ? 1 : 0;
+    return Math.max(0, Math.floor(base64.length * 3 / 4) - padding);
   }
   function multipart(fields, files) {
     var boundary = "----VibeDraw" + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -125,8 +152,11 @@
     bytesToBase64: bytesToBase64,
     base64ToBytes: base64ToBytes,
     utf8Bytes: utf8Bytes,
+    utf8Length: utf8Length,
+    utf8Chunks: utf8Chunks,
     concatBytes: concatBytes,
     dataUrlParts: dataUrlParts,
+    dataUrlByteLength: dataUrlByteLength,
     multipart: multipart,
     imageMimeFromHeaders: imageMimeFromHeaders
   };

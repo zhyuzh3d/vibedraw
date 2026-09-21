@@ -8,7 +8,7 @@
     { id: "a1x-image", name: "A1X 图片任务", description: "DreamShaper8 LCM 实时槽位固定 512；Flux.2 渲染槽位固定 1024，均为 1:1。" },
     { id: "openai-images", name: "OpenAI Images 兼容", description: "兼容 /v1/images/generations 与 /v1/images/edits，适合云端与兼容网关。" },
     { id: "sd-webui", name: "SD WebUI / Forge", description: "兼容 /sdapi/v1/img2img，适合局域网 Stable Diffusion WebUI 或 Forge。" },
-    { id: "comfyui", name: "ComfyUI Workflow", description: "上传草图并提交 API workflow，适合自定义本地工作流。" },
+    { id: "comfyui", name: "ComfyUI VibeDraw 插件", description: "通过 VibeDraw Input / Output 节点接入任意 ComfyUI 工作流。" },
     { id: "stability", name: "Stability AI", description: "兼容 Stable Image v2beta 的 Control Sketch 与 Generate 接口。" }
   ];
 
@@ -201,7 +201,7 @@
       guidance_scale: dream ? u.clamp(Number(config.guidanceScale) || 2, 1, 3) : 1,
       reference_strength: u.clamp(referenceStrength, 0, 2),
       inputs: { image_references: assetId ? [assetId] : [] },
-      output: { aspect_ratio: "1:1", resolution_tier: dream ? "compact512" : "standard1024" },
+      output: { aspect_ratio: "1:1", resolution_tier: dream ? "compact512" : "native" },
       seed: a1xSeed(input.seed)
     };
     if (dream) {
@@ -266,62 +266,36 @@
     return result;
   }
 
-  function replaceWorkflow(value, replacements) {
-    if (Array.isArray(value)) return value.map(function (item) { return replaceWorkflow(item, replacements); });
-    if (value && Object.prototype.toString.call(value) === "[object Object]") {
-      var result = {};
-      Object.keys(value).forEach(function (key) { result[key] = replaceWorkflow(value[key], replacements); });
-      return result;
-    }
-    if (typeof value !== "string") return value;
-    if (Object.prototype.hasOwnProperty.call(replacements, value)) return replacements[value];
-    var output = value;
-    Object.keys(replacements).forEach(function (token) { output = output.split(token).join(String(replacements[token])); });
-    return output;
-  }
   function comfyRoot(endpoint) { return u.stripSlash(endpoint).replace(/\/(?:prompt|system_stats)$/i, ""); }
-  async function comfyUpload(config, input) {
-    var image = u.dataUrlParts(input.imageDataUrl);
-    var body = u.multipart({ type: "input", overwrite: "true" }, [{ name: "image", filename: "vibedraw-" + Date.now() + ".png", mime: image.mime, bytes: image.bytes }]);
-    var requestHeaders = headers(config, body.contentType);
-    var response = await network.request({ url: comfyRoot(config.endpoint) + "/upload/image", method: "POST", headers: requestHeaders, bodyBytes: body.bytes, contentType: body.contentType, timeoutMs: config.timeoutMs });
-    ensureOk(response, requestHeaders);
-    var payload = u.parseJson(response.bodyText || "", null);
-    if (!payload || !payload.name) throw new Error("ComfyUI 未返回上传图片名称");
-    return payload.subfolder ? payload.subfolder + "/" + payload.name : payload.name;
-  }
-  function comfyOutput(history, promptId) {
-    var entry = history && (history[promptId] || history), outputs = entry && entry.outputs || {};
-    var nodeIds = Object.keys(outputs);
-    for (var index = 0; index < nodeIds.length; index += 1) {
-      var images = outputs[nodeIds[index]] && outputs[nodeIds[index]].images;
-      if (images && images[0]) return images[0];
-    }
-    return null;
-  }
   async function comfyGenerate(config, input) {
     var template = u.parseJson(config.workflow || "", null);
     if (!template || Object.prototype.toString.call(template) !== "[object Object]") throw new Error("ComfyUI 需要粘贴有效的 API workflow JSON");
-    var uploaded = config.inputMode === "text" ? "" : await comfyUpload(config, input);
-    var workflow = replaceWorkflow(template, {
-      "{{prompt}}": input.prompt,
-      "{{negative_prompt}}": input.negativePrompt,
-      "{{image}}": uploaded,
-      "{{seed}}": Number(input.seed) >= 0 ? Number(input.seed) : Math.floor(Math.random() * 2147483647),
-      "{{steps}}": Number(config.steps) || 20,
-      "{{width}}": Number(config.width) || 768,
-      "{{height}}": Number(config.height) || 768,
-      "{{denoise}}": u.clamp(Number(input.strength), 0, 1)
-    });
     var root = comfyRoot(config.endpoint), requestHeaders = headers(config, "application/json"), clientId = u.id("vibedraw");
-    var queued = await network.requestJson({ url: root + "/prompt", method: "POST", headers: requestHeaders, bodyText: JSON.stringify({ prompt: workflow, client_id: clientId }), timeoutMs: config.timeoutMs });
-    var promptId = queued.data && queued.data.prompt_id;
-    if (!promptId) throw new Error("ComfyUI 未返回任务 ID，请确认粘贴的是 API workflow");
+    var body = {
+      workflow: template,
+      inputs: {
+        prompt: input.prompt,
+        negative_prompt: input.negativePrompt,
+        seed: Number(input.seed) >= 0 ? Number(input.seed) : Math.floor(Math.random() * 2147483647),
+        ref_strength: u.clamp(Number(input.strength), 0, 2),
+        steps: Number(config.steps) || 20,
+        width: Number(config.width) || 768,
+        height: Number(config.height) || 768
+      },
+      client_id: clientId
+    };
+    if (config.inputMode !== "text" && input.imageDataUrl) body.image_base64 = input.imageDataUrl;
+    if (input.maskDataUrl) body.mask_base64 = input.maskDataUrl;
+    var queued = await network.requestJson({ url: root + "/vibedraw/v1/jobs", method: "POST", headers: requestHeaders, bodyText: JSON.stringify(body), timeoutMs: config.timeoutMs });
+    var queuedData = queued.data || {}, promptId = queuedData.job_id;
+    if (!promptId) throw new Error("ComfyUI VibeDraw 插件未返回任务 ID，请确认已安装插件并包含 VibeDraw Input / Output 节点");
     var deadline = Date.now() + (Number(config.timeoutMs) || 180000), output = null;
     while (Date.now() < deadline) {
       await u.sleep(800);
-      var history = await network.requestJson({ url: root + "/history/" + encodeURIComponent(promptId), method: "GET", headers: headers(config), timeoutMs: 15000 });
-      output = comfyOutput(history.data, promptId);
+      var detailResponse = await network.requestJson({ url: root + "/vibedraw/v1/jobs/" + encodeURIComponent(promptId), method: "GET", headers: headers(config), timeoutMs: 15000 });
+      var detail = detailResponse.data || {};
+      if (detail.state === "failed") throw new Error("ComfyUI VibeDraw 工作流执行失败");
+      output = detail.outputs && detail.outputs[0];
       if (output) break;
     }
     if (!output) throw new Error("ComfyUI 生成超时，任务可能仍在服务端队列中");
@@ -345,7 +319,7 @@
     var a1xSize = config && config.slot === "quality" ? 1024 : 512;
     if (config.protocol === "a1x-image" && (Number(config.width) !== a1xSize || Number(config.height) !== a1xSize || [2, 4, 8].indexOf(Number(config.steps)) < 0)) throw new Error("A1X 图片模型要求实时 512 × 512、渲染 1024 × 1024，并支持 2 / 4 / 8 步");
     if (config.protocol === "openai-images" && !config.model) throw new Error("请填写图像模型 ID");
-    if (config.protocol === "comfyui" && !u.parseJson(config.workflow || "", null)) throw new Error("请先粘贴 ComfyUI API workflow JSON");
+    if (config.protocol === "comfyui" && !u.parseJson(config.workflow || "", null)) throw new Error("请先粘贴包含 VibeDraw Input / Output 节点的 ComfyUI API workflow JSON");
     u.parseHeaders(config.customHeaders || "");
   }
   async function test(config) {
@@ -358,15 +332,20 @@
       var profiles = capability.data && capability.data.profiles || {};
       var dream = config.model === "dreamshaper8_lcm_blended_img2img_sd15" || config.model === "dreamshaper8_lcm_scribble_sd15" || config.slot === "quick";
       var selectedProfiles, imageModel;
+      function supportsTier(tier, expectedSize) {
+        var resolutions = capability.data && capability.data.image_resolutions || {}, sizes = resolutions[tier] && resolutions[tier]["1:1"];
+        if (Array.isArray(sizes) && sizes[0] === expectedSize && sizes[1] === expectedSize) return true;
+        return Array.isArray(imageModel.allowed_resolution_tiers) && imageModel.allowed_resolution_tiers.indexOf(tier) >= 0;
+      }
       if (dream) {
         var dreamProfile = profiles.dreamshaper8_lcm_blended_img2img_sd15;
         imageModel = capability.data && capability.data.image_models && capability.data.image_models.lcm_blended_img2img_sd15;
-        if (!dreamProfile || !dreamProfile.qualification || dreamProfile.qualification.image_generate !== "qualified" || !imageModel || !Array.isArray(imageModel.allowed_steps) || [2, 4, 8].some(function (step) { return imageModel.allowed_steps.indexOf(step) < 0; }) || !Array.isArray(imageModel.allowed_resolution_tiers) || imageModel.allowed_resolution_tiers.indexOf("compact512") < 0) throw new Error("A1X 当前未开放 DreamShaper8 LCM 的 2 / 4 / 8 步与 compact512 能力");
+        if (!dreamProfile || !dreamProfile.qualification || dreamProfile.qualification.image_generate !== "qualified" || !imageModel || !Array.isArray(imageModel.allowed_steps) || [2, 4, 8].some(function (step) { return imageModel.allowed_steps.indexOf(step) < 0; }) || !supportsTier("compact512", 512)) throw new Error("A1X 当前未开放 DreamShaper8 LCM 的 2 / 4 / 8 步与 compact512 能力");
         selectedProfiles = ["dreamshaper8_lcm_blended_img2img_sd15"];
       } else {
         var distilled = profiles.flux2_klein_4b_distilled_nvfp4, base = profiles.flux2_klein_4b_base_nvfp4;
         imageModel = capability.data && capability.data.image_models && capability.data.image_models.flux2;
-        if (!distilled || !base || !distilled.qualification || distilled.qualification.image_generate !== "qualified" || !base.qualification || base.qualification.image_generate !== "qualified" || !imageModel || !Array.isArray(imageModel.allowed_steps) || [2, 4, 8].some(function (step) { return imageModel.allowed_steps.indexOf(step) < 0; }) || !Array.isArray(imageModel.allowed_resolution_tiers) || imageModel.allowed_resolution_tiers.indexOf("standard1024") < 0) throw new Error("A1X 当前未开放 Flux.2 Klein 4B 的 2 / 4 / 8 步与 standard1024 能力");
+        if (!distilled || !base || !distilled.qualification || distilled.qualification.image_generate !== "qualified" || !base.qualification || base.qualification.image_generate !== "qualified" || !imageModel || !Array.isArray(imageModel.allowed_steps) || [2, 4, 8].some(function (step) { return imageModel.allowed_steps.indexOf(step) < 0; }) || !supportsTier("native", 1024)) throw new Error("A1X 当前未开放 Flux.2 Klein 4B 的 2 / 4 / 8 步与 1024 × 1024 native 能力");
         selectedProfiles = ["flux2_klein_4b_distilled_nvfp4", "flux2_klein_4b_base_nvfp4"];
       }
       var jobs = await network.request({ url: root + "/api/a1x-h3/v2/jobs?limit=1", method: "GET", headers: capabilityHeaders, timeoutMs: Math.min(Number(config.timeoutMs) || 30000, 30000) });
@@ -375,7 +354,7 @@
     }
     if (config.protocol === "openai-images") { root = openAiRoot(config.endpoint); url = root + "/models"; }
     else if (config.protocol === "sd-webui") url = u.stripSlash(config.endpoint) + "/sdapi/v1/sd-models";
-    else if (config.protocol === "comfyui") url = comfyRoot(config.endpoint) + "/system_stats";
+    else if (config.protocol === "comfyui") url = comfyRoot(config.endpoint) + "/vibedraw/v1/capabilities";
     else {
       var parsed = new URL(stabilityEndpoint(config));
       url = parsed.origin + "/v1/user/account";
@@ -430,7 +409,6 @@
       a1xRoot: a1xRoot,
       a1xPayload: a1xPayload,
       a1xRetry: a1xRetry,
-      replaceWorkflow: replaceWorkflow,
       jsonImage: jsonImage,
       aspect: aspect
     }

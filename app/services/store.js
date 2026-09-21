@@ -1,7 +1,8 @@
 (function (app) {
   "use strict";
-  var revisions = {}, chunkManifests = {}, saveTimer = 0, queue = Promise.resolve(), index = [], paused = false;
-  var CHUNK_SCHEMA = "vibedraw-chunked/v1", DIRECT_LIMIT = 40000, CHUNK_LENGTH = 18000, MAX_BYTES = 8 * 1024 * 1024;
+  var revisions = {}, chunkManifests = {}, saveTimer = 0, queue = Promise.resolve(), index = [], paused = false, savePending = false;
+  var lastCanvasFingerprint = "", lastPersistedSnapshot = null;
+  var CHUNK_SCHEMA = "vibedraw-chunked/v1", DIRECT_LIMIT = 30000, CHUNK_BYTES = 30000, IO_CONCURRENCY = 4, MAX_BYTES = 8 * 1024 * 1024;
   var fields = ["prompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"];
   function serial(task) { var next = queue.then(task); queue = next.catch(function () {}); return next; }
   async function readRaw(key, fallback) {
@@ -18,29 +19,36 @@
   function chunkKey(key, manifest, part) { return key + "-chunk-" + manifest.generation + "-" + part; }
   async function cleanupChunks(key, manifest) {
     if (!isChunkManifest(manifest)) return;
-    for (var part = 0; part < manifest.parts; part += 1) {
-      var name = chunkKey(key, manifest, part);
-      await app.platform.hermit.deleteData("vibedraw", name);
-      delete revisions[name];
+    for (var start = 0; start < manifest.parts; start += IO_CONCURRENCY) {
+      var tasks = [];
+      for (var part = start; part < Math.min(manifest.parts, start + IO_CONCURRENCY); part += 1) {
+        var name = chunkKey(key, manifest, part);
+        tasks.push(app.platform.hermit.deleteData("vibedraw", name).catch(function () {})); delete revisions[name];
+      }
+      await Promise.all(tasks);
     }
   }
   async function read(key, fallback) {
     var value = await readRaw(key, fallback);
     if (!isChunkManifest(value)) { chunkManifests[key] = null; return value; }
     chunkManifests[key] = app.utils.copy(value);
-    var serialized = "";
-    for (var part = 0; part < value.parts; part += 1) {
-      var piece = await readRaw(chunkKey(key, value, part), null);
-      if (typeof piece !== "string") throw new Error(app.i18n.text("作品数据不完整，缺少存储分块", "Artwork data is incomplete: a storage chunk is missing"));
-      serialized += piece;
+    var pieces = new Array(value.parts);
+    for (var start = 0; start < value.parts; start += IO_CONCURRENCY) {
+      var tasks = [];
+      for (var part = start; part < Math.min(value.parts, start + IO_CONCURRENCY); part += 1) {
+        (function (position) { tasks.push(readRaw(chunkKey(key, value, position), null).then(function (piece) { pieces[position] = piece; })); })(part);
+      }
+      await Promise.all(tasks);
     }
-    if (app.utils.utf8Bytes(serialized).length !== value.bytes) throw new Error(app.i18n.text("作品数据校验失败", "Artwork data failed its integrity check"));
+    if (!pieces.every(function (piece) { return typeof piece === "string"; })) throw new Error(app.i18n.text("作品数据不完整，缺少存储分块", "Artwork data is incomplete: a storage chunk is missing"));
+    var serialized = pieces.join("");
+    if (app.utils.utf8Length(serialized) !== value.bytes) throw new Error(app.i18n.text("作品数据校验失败", "Artwork data failed its integrity check"));
     var parsed = app.utils.parseJson(serialized, null);
     if (parsed == null) throw new Error(app.i18n.text("作品数据格式损坏", "Artwork data is corrupted"));
     return parsed;
   }
   async function write(key, value) {
-    var serialized = JSON.stringify(value), bytes = app.utils.utf8Bytes(serialized).length;
+    var serialized = JSON.stringify(value), bytes = app.utils.utf8Length(serialized);
     if (bytes > MAX_BYTES) throw new Error(app.i18n.text("作品过于复杂，单件作品最多保存 8 MB 可编辑数据", "This artwork is too complex. Editable data is limited to 8 MB per artwork"));
     var oldManifest = chunkManifests[key];
     if (bytes <= DIRECT_LIMIT) {
@@ -49,18 +57,22 @@
       cleanupChunks(key, oldManifest).catch(function () {});
       return directResult;
     }
-    var manifest = { schema: CHUNK_SCHEMA, generation: app.utils.id("g"), parts: Math.ceil(serialized.length / CHUNK_LENGTH), bytes: bytes };
-    var written = 0;
+    var chunks = app.utils.utf8Chunks(serialized, CHUNK_BYTES);
+    var manifest = { schema: CHUNK_SCHEMA, generation: app.utils.id("g"), parts: chunks.length, bytes: bytes };
     try {
-      for (; written < manifest.parts; written += 1) {
-        await writeRaw(chunkKey(key, manifest, written), serialized.slice(written * CHUNK_LENGTH, (written + 1) * CHUNK_LENGTH));
+      for (var start = 0; start < manifest.parts; start += IO_CONCURRENCY) {
+        var tasks = [];
+        for (var part = start; part < Math.min(manifest.parts, start + IO_CONCURRENCY); part += 1) {
+          tasks.push(writeRaw(chunkKey(key, manifest, part), chunks[part]).then(function () { return null; }, function (error) { return error; }));
+        }
+        var errors = (await Promise.all(tasks)).filter(function (error) { return Boolean(error); });
+        if (errors.length) throw errors[0];
       }
       var result = await writeRaw(key, manifest);
       chunkManifests[key] = manifest;
       cleanupChunks(key, oldManifest).catch(function () {});
       return result;
     } catch (error) {
-      manifest.parts = written;
       cleanupChunks(key, manifest).catch(function () {});
       throw error;
     }
@@ -74,7 +86,7 @@
   function migrateConfig(stored) {
     var previousSchema = Number(stored && stored.schema) || 0;
     var original = app.utils.merge(app.defaults, stored || {});
-    var value = app.utils.copy(original), changed = previousSchema < 5;
+    var value = app.utils.copy(original), changed = previousSchema < 6;
     ["quick", "quality"].forEach(function (name) {
       var model = value[name];
       if (!model) return;
@@ -88,8 +100,8 @@
     });
     value.canvas = value.canvas || {};
     delete value.canvas.overlayGenerate; delete value.canvas.includeResult; delete value.canvas.resultOpacity;
-    value.schema = 5;
-    return { value: value, changed: changed || JSON.stringify(value) !== JSON.stringify(original) };
+    value.schema = 6;
+    return { value: value, changed: changed || JSON.stringify(value) !== JSON.stringify(original), migrateWorkTitles: previousSchema < 6 };
   }
   function isUntitledTitle(title) { return /^(?:未命名作品\d+|Untitled artwork\s+\d+)$/.test(String(title || "")); }
   function nextUntitledTitle() {
@@ -114,8 +126,10 @@
   }
   async function loadConfig() {
     var stored = await read("config", app.defaults), migrated = migrateConfig(stored);
+    app.config = migrated.value; index = await read("works", []);
+    if (migrated.migrateWorkTitles) await migrateWorkTitles();
     if (migrated.changed) await write("config", migrated.value);
-    app.config = migrated.value; index = await read("works", []); await migrateWorkTitles(); return app.config;
+    return app.config;
   }
   async function saveConfig(config) {
     var value = app.utils.merge(app.defaults, config);
@@ -126,9 +140,7 @@
     var snapshot = { schema: 9, objects: [], result: null, savedAt: Date.now() };
     fields.forEach(function (name) { snapshot[name] = app.state[name]; });
     snapshot.objects = app.state.objects.map(function (object) {
-      var copy = app.utils.copy(object); delete copy.src;
-      if (copy.url && /^(data:|blob:)/.test(copy.url)) delete copy.url;
-      return copy;
+      return app.drawing.storageObject(object);
     });
     if (app.state.result) {
       var result = app.state.result;
@@ -136,6 +148,25 @@
       if (!snapshot.result.asset && result.src && !/^(data:|blob:)/.test(result.src)) snapshot.result.asset = { url: result.src };
     }
     return snapshot;
+  }
+  function fingerprint(snapshot) {
+    if (!snapshot) return "";
+    var savedAt = snapshot.savedAt; snapshot.savedAt = 0;
+    var value = JSON.stringify(snapshot); snapshot.savedAt = savedAt;
+    var first = 2166136261, second = 2246822519;
+    for (var index = 0; index < value.length; index += 1) {
+      var code = value.charCodeAt(index);
+      first ^= code; first = Math.imul(first, 16777619);
+      second ^= code + index; second = Math.imul(second, 3266489917);
+    }
+    return value.length + ":" + (first >>> 0).toString(36) + ":" + (second >>> 0).toString(36);
+  }
+  function assetSnapshot(snapshot) {
+    return {
+      workId: snapshot && snapshot.workId || "",
+      objects: (snapshot && snapshot.objects || []).filter(function (object) { return Boolean(object.asset || object.logicalFileId); }).map(function (object) { return { asset: object.asset || null, logicalFileId: object.logicalFileId || "" }; }),
+      result: snapshot && snapshot.result ? { asset: snapshot.result.asset || null, logicalFileId: snapshot.result.logicalFileId || "" } : null
+    };
   }
   async function persistImages() {
     var objects = app.state.objects.slice(), result = app.state.result;
@@ -151,34 +182,43 @@
     app.events.emit("save", "saving");
     await persistImages();
     var snapshot = serializeCanvas();
-    var previous = null;
+    var previous = null, completedFingerprint = "";
     if (meaningful() || app.state.workId) {
       if (!app.state.workId) app.state.workId = app.utils.id("work");
       snapshot.workId = app.state.workId;
       if (!String(snapshot.workTitle || "").trim()) { snapshot.workTitle = untitledTitleFor(snapshot.workId) || nextUntitledTitle(); app.state.workTitle = snapshot.workTitle; }
       var item = index.find(function (value) { return value.id === snapshot.workId; });
+      var nextFingerprint = fingerprint(snapshot);
+      if (nextFingerprint === lastCanvasFingerprint) { savePending = false; app.events.emit("save", "saved"); return snapshot; }
       var nextItem = { id: snapshot.workId, title: snapshot.workTitle, createdAt: item ? item.createdAt : Date.now(), updatedAt: Date.now(), hasResult: Boolean(snapshot.result) };
-      if (item) previous = await read("work-" + snapshot.workId, null);
+      if (item) previous = lastPersistedSnapshot && lastPersistedSnapshot.workId === snapshot.workId ? lastPersistedSnapshot : await read("work-" + snapshot.workId, null);
       await write("work-" + snapshot.workId, snapshot);
       index = index.filter(function (value) { return value.id !== snapshot.workId; });
       index.unshift(nextItem);
       await write("works", index);
+      completedFingerprint = nextFingerprint;
+    } else {
+      var blankFingerprint = fingerprint(snapshot);
+      if (blankFingerprint === lastCanvasFingerprint) { savePending = false; app.events.emit("save", "saved"); return snapshot; }
+      completedFingerprint = blankFingerprint;
     }
     await write("canvas", snapshot);
+    lastCanvasFingerprint = completedFingerprint; lastPersistedSnapshot = assetSnapshot(snapshot);
     if (previous && JSON.stringify(app.services.assets.references(previous)) !== JSON.stringify(app.services.assets.references(snapshot))) {
       var surviving = [snapshot];
       for (var work of index) if (work.id !== snapshot.workId) { var saved = await get(work.id); if (saved) surviving.push(saved); }
       await app.services.assets.cleanup(previous, surviving).catch(function () {});
     }
-    app.events.emit("save", "saved"); app.events.emit("works:changed", index.length);
+    savePending = false; app.events.emit("save", "saved"); app.events.emit("works:changed", index.length);
     return snapshot;
   }
   function scheduleCanvasSave() {
     if (paused) return;
-    clearTimeout(saveTimer); app.events.emit("save", "pending");
+    clearTimeout(saveTimer);
+    if (!savePending) { savePending = true; app.events.emit("save", "pending"); }
     saveTimer = setTimeout(function () { flush().catch(saveError); }, 650);
   }
-  function saveError(error) { app.events.emit("save", "error"); app.events.emit("error", error); }
+  function saveError(error) { savePending = false; app.events.emit("save", "error"); app.events.emit("error", error); }
   function flush() { clearTimeout(saveTimer); return serial(saveNow); }
   async function hydrate(snapshot) {
     if (!snapshot) return null;
@@ -211,8 +251,12 @@
     if (missing) app.events.emit("error", new Error(app.i18n.text("部分历史图片无法读取，草稿与描述仍可编辑", "Some saved images are unavailable. Your sketch and prompt remain editable")));
     return copy;
   }
-  async function loadCanvas() { return hydrate(await read("canvas", null)); }
-  function list() { return app.utils.copy(index); }
+  async function loadCanvas() {
+    var stored = await read("canvas", null), hydrated = await hydrate(stored);
+    if (stored && Number(stored.schema) >= 9) { lastCanvasFingerprint = fingerprint(stored); lastPersistedSnapshot = assetSnapshot(stored); }
+    return hydrated;
+  }
+  function list() { return index.map(function (item) { return { id: item.id, title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt, hasResult: item.hasResult }; }); }
   async function get(id) { return read("work-" + id, null); }
   async function restoreWork(id, duplicate) {
     await flush();

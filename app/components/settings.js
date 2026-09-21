@@ -9,10 +9,28 @@
     return '<label class="field"><span>' + label + '</span><textarea name="' + name + '"' + (rows ? ' rows="' + rows + '"' : '') + ' placeholder="' + u.escapeHtml(placeholder || "") + '">' + u.escapeHtml(value || "") + '</textarea></label>';
   }
   function select(name, label, value, choices) {
-    return '<label class="field"><span>' + label + '</span><select name="' + name + '">' + choices.map(function (item) { return '<option value="' + item[0] + '"' + (value === item[0] ? " selected" : "") + '>' + item[1] + '</option>'; }).join("") + '</select></label>';
+    var current = choices.filter(function (item) { return String(item[0]) === String(value); })[0] || choices[0];
+    return '<div class="field choice-field"><span>' + label + '</span><input type="hidden" name="' + name + '" value="' + u.escapeHtml(value) + '"><button type="button" class="sheet-choice" data-choice="' + name + '" data-choice-label="' + u.escapeHtml(label) + '" data-choice-options="' + u.escapeHtml(JSON.stringify(choices)) + '"><span>' + u.escapeHtml(current[1]) + '</span><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button></div>';
   }
-  function range(name, label, value, min, max, suffix) {
-    return '<label class="field"><span>' + label + ' <strong data-range-label="' + name + '">' + value + (suffix || "") + '</strong></span><input name="' + name + '" type="range" min="' + min + '" max="' + max + '" value="' + value + '" data-suffix="' + (suffix || "") + '"></label>';
+  function syncChoice(field) {
+    var button = field.parentNode.querySelector("[data-choice]"), choices = u.parseJson(button && button.dataset.choiceOptions, []);
+    if (!button) return;
+    var current = choices.filter(function (item) { return String(item[0]) === String(field.value); })[0] || choices[0];
+    if (current) button.querySelector("span").textContent = current[1];
+  }
+  function bindChoices(root) {
+    root.querySelectorAll("[data-choice]").forEach(function (button) {
+      button.onclick = function () {
+        var field = root.querySelector('[name="' + button.dataset.choice + '"]'), choices = u.parseJson(button.dataset.choiceOptions, []);
+        if (!field || !choices.length) return;
+        ui.openChoice({ title: button.dataset.choiceLabel, choices: choices, value: field.value, onSelect: function (value) {
+          field.value = value; syncChoice(field); field.dispatchEvent(new Event("change", { bubbles: true }));
+        } });
+      };
+    });
+  }
+  function range(name, label, value, min, max, suffix, className) {
+    return '<label class="field' + (className ? " " + className : "") + '"><span>' + label + ' <strong data-range-label="' + name + '">' + value + (suffix || "") + '</strong></span><input name="' + name + '" type="range" min="' + min + '" max="' + max + '" value="' + value + '" data-suffix="' + (suffix || "") + '"></label>';
   }
   function ranges(root) {
     root.querySelectorAll('input[type="range"]').forEach(function (field) {
@@ -43,13 +61,14 @@
       input("endpoint", t("服务地址", "Base URL"), model.endpoint, "url", "https://… / http://192.168.…") +
       '<label class="field"><span>' + (a1x ? t("A1X 访问密码", "A1X access password") : "API Key") + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(model.apiKey) + '" placeholder="' + t("免鉴权的本地服务可留空", "Optional for local services") + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>' +
       (comfy || a1x ? '' : input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider"))) +
-      (comfy ? textarea("workflow", t("ComfyUI API 工作流", "ComfyUI API workflow"), model.workflow, "{{prompt}}, {{image}}, {{seed}}, {{steps}}…") : '') +
+      (comfy ? textarea("workflow", t("ComfyUI VibeDraw 工作流", "ComfyUI VibeDraw workflow"), model.workflow, "导出包含 VibeDraw Input / Output 节点的 API workflow JSON") : '') +
       (a1x ? '<div class="a1x-profile"><div><i class="fa-solid fa-microchip"></i><span><strong>' + (slot === "quick" ? "DreamShaper8 LCM " + t("单路混合重绘", "single-path redraw") : "Flux.2 Klein 4B") + '</strong><small>' + (slot === "quick" ? t("原稿叠加轻微模糊后直接进行 img2img；不使用轮廓或颜色双通道", "Direct img2img from the canvas mixed with a mild blur; no separate structure or color channels") : t("固定 1024 × 1024、1:1 与 1.0 MP 参考图编码；2 / 4 步使用 Distilled，8 步使用 Base", "Fixed at 1024 × 1024, 1:1 and 1.0 MP reference encoding; 2 / 4 steps use Distilled and 8 steps use Base")) + '</small></span></div><div class="field-row"><div class="field locked-field"><span>' + t("生成尺寸", "Output size") + '</span><strong>' + (slot === "quick" ? "512 × 512" : "1024 × 1024") + '</strong></div>' + select("steps", t("采样步数", "Sampling steps"), Number(model.steps), [[2, "2"], [4, "4"], [8, "8"]]) + '</div></div>' : '') +
       '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + (a1x ? '' : (slot === "quality" ? '<div class="field locked-field"><span>' + t("渲染尺寸", "Render size") + '</span><strong>1024 × 1024</strong></div>' : input("width", t("宽度", "Width"), model.width, "number") + input("height", t("高度", "Height"), model.height, "number")) + input("steps", t("步数", "Steps"), model.steps, "number")) + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + '</div>' +
       (model.protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
       textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
       '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；API Key 仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Keys are stored locally when you save.") + '</p>' +
       '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p></div>' + footer() });
+    bindChoices(root);
     root.querySelector("[data-a1x-setup]").onclick = async function () {
       var hasExisting = Boolean(draft.quick.endpoint || draft.quick.apiKey || draft.quick.workflow);
       if (hasExisting) {
@@ -70,7 +89,7 @@
         var previous = model.protocol, protocol = field.value;
         if (model.endpoint || model.apiKey || model.workflow) {
           var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("当前槽位的地址、密钥和接口参数会重置；另一个模型不受影响。", "This slot's URL, key and API options will reset. The other model stays unchanged."), ok: t("切换", "Change") });
-          if (!confirmed) { field.value = previous; return; }
+          if (!confirmed) { field.value = previous; syncChoice(field); return; }
         }
         draft[slot] = app.services.providers.preset(protocol, slot); renderModels();
       };
@@ -110,8 +129,8 @@
     var root = ui.open({ sheetClass: "work-settings-sheet", contentClass: "work-settings-content", title: t("作品设置", "Artwork settings"), footerHtml: footer(t("应用", "Apply")), html:
       textarea("prompt", t("简述你期望的画面内容（英文）", "Describe the image you expect (English)"), state.prompt, "For example: a blue crystal bird flying over snowy mountains", 3) +
       textarea("negativePrompt", t("不希望出现内容（英文）", "What to avoid (English)"), state.negativePrompt, "For example: blurry, distorted, text, watermark", 2) +
-      range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, a1x ? 200 : 100, "%") +
-      '<p class="field-help compact-help">' + t("实时模型只使用这一项：数值越高，LCM 重绘幅度越小。原稿会与 25% 的轻微模糊副本混合后直接输入模型。", "This is the only realtime control: higher values reduce LCM redraw. The canvas is mixed with a 25% mildly blurred copy and sent directly to the model.") + '</p>' +
+      range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, a1x ? 200 : 100, "%", "strength-field") +
+      '<p class="field-help compact-help">' + t("设置100或更高可以让AI画图和手绘稿更一致；设置80或更低会让AI更有创造力；请随时根据需要来这里调整。", "Set 100 or higher to keep the AI image closer to your sketch; set 80 or lower to give the AI more creative freedom. Return here and adjust it whenever needed.") + '</p>' +
       '<div class="field-row">' + input("seed", t("随机种子", "Seed"), state.seed, "number", t("关闭锁定时由模型自动随机", "The model randomizes while unlocked")) + input("autoDelayMs", t("笔刷等待（毫秒）", "Brush wait (ms)"), state.autoDelayMs, "number") + '</div>' +
       '<label class="switch-row"><span><strong>' + t("锁定随机种子", "Lock random seed") + '</strong><small>' + t("开启后重复使用当前种子，便于稳定画风与构图", "Reuse the current seed for more consistent style and composition") + '</small></span><input class="toggle-switch" name="seedLocked" type="checkbox" role="switch"' + (state.seedLocked ? " checked" : "") + '></label>' +
       '<label class="switch-row"><span><strong>' + t("叠加生成", "Overlay generation") + '</strong><small>' + t("开启：提交画布当前真实显示的背景、成图和透明元素层；关闭：忽略成图，提交背景与完全不透明的元素层", "On: submit exactly what the canvas shows: background, result, and the translucent element layer. Off: omit the result and submit the background with a fully opaque element layer") + '</small></span><input class="toggle-switch" name="overlayGenerate" type="checkbox" role="switch"' + (state.overlayGenerate ? " checked" : "") + '></label>' });
@@ -130,7 +149,7 @@
       state.prompt = root.querySelector('[name="prompt"]').value.trim(); state.negativePrompt = root.querySelector('[name="negativePrompt"]').value.trim();
       state.seed = seed; state.seedLocked = locked; state.strength = Number(root.querySelector('[name="strength"]').value) / 100; state.autoDelayMs = delay;
       var nextOverlayGenerate = root.querySelector('[name="overlayGenerate"]').checked;
-      if (state.overlayGenerate !== nextOverlayGenerate) state.resultOpacity = nextOverlayGenerate ? 1 : 0.9;
+      if (state.overlayGenerate !== nextOverlayGenerate) { state.resultOpacity = 0.66; state.layerOpacity = 0.66; }
       state.overlayGenerate = nextOverlayGenerate;
       app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule(); app.events.emit("result:filter"); app.events.emit("work:settings"); ui.close(); ui.toast(t("作品设置已应用", "Artwork settings applied"));
     });
@@ -230,6 +249,7 @@
       '<div class="section-label">' + t("外观", "Appearance") + '</div>' + select("theme", t("主题", "Theme"), prefs.theme, [["system", t("跟随系统", "System")], ["light", t("浅色", "Light")], ["dark", t("深色", "Dark")]]) +
       '<div class="section-label">' + t("语言", "Language") + '</div>' + select("language", t("界面语言", "Interface language"), prefs.language, [["zh", "简体中文"], ["en", "English"]]) +
       '<p class="field-help">' + t("设置会保存在此设备，不影响作品的提示词与模型配置。", "Saved on this device. Artwork prompts and model settings stay the same.") + '</p>' + footer() });
+    bindChoices(root);
     root.querySelector("[data-cancel]").onclick = ui.close;
     root.querySelector("[data-save]").onclick = ui.action(async function () {
       var next = u.copy(app.config); next.preferences = { theme: root.querySelector('[name="theme"]').value, language: root.querySelector('[name="language"]').value };

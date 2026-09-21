@@ -7,14 +7,15 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const context = { console, URL, Uint8Array, TextEncoder, setTimeout, clearTimeout };
 context.window = context; vm.createContext(context);
 function load(name) { vm.runInContext(fs.readFileSync(path.join(root, name), "utf8"), context, { filename: name }); }
-load("app/core/namespace.js"); load("app/core/utils.js"); load("app/core/i18n.js");
+load("app/core/namespace.js"); load("app/core/utils.js"); load("app/core/runtime.js"); load("app/core/drawing.js"); load("app/core/i18n.js");
 const app = context.vibedraw, records = new Map();
-let rev = 0, failWrite = false;
+let rev = 0, failWrite = false, failKey = "", putCount = 0;
 const copy = x => JSON.parse(JSON.stringify(x));
 app.platform.hermit = {
   getData: async (_, key) => records.has(key) ? copy(records.get(key)) : null,
   putData: async (_, key, value, expected) => {
-    if (failWrite) throw new Error("disk full");
+    if (failWrite || key === failKey) throw new Error("disk full");
+    putCount += 1;
     assert.ok(Buffer.byteLength(JSON.stringify({ value })) <= 64 * 1024, "each physical record must respect the Hermit 64 KiB limit");
     const old = records.get(key);
     if (old && expected) assert.equal(expected, old.revision, "writes must use the newest revision");
@@ -37,7 +38,7 @@ Object.assign(legacyConfig.quick, { protocol: "a1x-flux", endpoint: "http://192.
 Object.assign(legacyConfig.quality, { protocol: "a1x-flux", endpoint: "http://192.168.124.31:8188", apiKey: "kept-secret", width: 512, height: 512, steps: 4, model: "flux2_klein_4b_distilled_nvfp4" });
 records.set("config", { value: legacyConfig, revision: "seed-config" });
 await store.loadConfig();
-assert.equal(app.config.schema, 5);
+assert.equal(app.config.schema, 6);
 assert.equal(app.config.quick.protocol, "a1x-image");
 assert.equal(app.config.quick.width, 512);
 assert.equal(app.config.quick.steps, 4);
@@ -80,6 +81,9 @@ app.state.prompt = "Changed";
 await Promise.all([store.flush(), store.flush()]);
 assert.equal(store.list().length, 1, "autosaving must update the work, not duplicate it");
 assert.equal((await store.get(originalId)).prompt, "Changed");
+const unchangedPutCount = putCount;
+await store.flush();
+assert.equal(putCount, unchangedPutCount, "an unchanged canvas flush must not rewrite Hermit records");
 const restored = await store.restoreWork(originalId, false);
 assert.equal(restored.objects[1].src, "data:image/png;base64,restored");
 assert.equal(restored.result.src, "data:image/png;base64,restored");
@@ -109,15 +113,21 @@ const modified = copy(app.config); modified.preferences.language = "en";
 await assert.rejects(() => store.saveConfig(modified), /disk full/);
 assert.equal(JSON.stringify(app.config), previousConfig, "failed save must not claim new preferences");
 failWrite = false;
+app.state.prompt = "Retry after canvas write failure";
+failKey = "canvas";
+await assert.rejects(() => store.flush(), /disk full/);
+failKey = "";
+await store.flush();
+assert.equal((await store.loadCanvas()).prompt, "Retry after canvas write failure", "a failed canvas write must remain retryable instead of poisoning the save fingerprint");
 // Generation must keep one physical request in flight, coalesce updates, and ignore dismissed results.
 const pending = [], inputs = [], events = [], generationConfigs = [];
-let composeOptions = null, visibleComposeOptions = null, composeMethod = "";
+let composeOptions = null, visibleComposeOptions = null, composeMethod = "", maskCompositions = 0;
 app.events.on("generation:done", value => events.push(value));
 app.components.canvas = {
   composeInput: async options => { composeMethod = "image"; composeOptions = options; return "data:image/png;base64,x"; },
   composeVisibleInput: async options => { composeMethod = "visible"; visibleComposeOptions = options; return "data:image/png;base64,visible"; },
   imageDimensions: async () => ({ width: 1024, height: 1024 }),
-  composeMask: () => "data:image/png;base64,mask", hasMask: () => true
+  composeMask: () => { maskCompositions += 1; return "data:image/png;base64,mask"; }, hasMask: () => true
 };
 app.services.providers = { generate: (config, input) => { generationConfigs.push(config); inputs.push(input); return new Promise(resolve => pending.push(resolve)); } };
 app.services.store.scheduleCanvasSave = () => {};
@@ -134,6 +144,7 @@ assert.equal(composeMethod, "image", "DreamShaper realtime must submit the actua
 assert.deepEqual(JSON.parse(JSON.stringify(composeOptions)), { size: 512, mime: "image/jpeg", quality: 0.82, maxBytes: 512000 }, "A1X must receive the current 512 reference image on every request");
 assert.equal(inputs[0].seed, 73, "locked seed must be submitted unchanged");
 assert.equal(inputs[0].colorStrength, 0.47, "the artwork color strength must reach the provider request unchanged");
+assert.equal(maskCompositions, 0, "A1X must not encode masks that its request contract does not consume");
 app.state.prompt = "latest";
 await app.services.imageEngine.run("quick", true);
 await app.services.imageEngine.run("quick", true);

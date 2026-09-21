@@ -18,6 +18,7 @@ VibeDraw 是一个可直接运行在 HermitApp 中的开源 AI 绘图 happ。它
 - 新建作品前先保存旧作；生成时可继续绘图，快速操作合并排队。停止等待忽略返回结果，不保证取消服务端任务或计费。
 - 导出：生成工具栏的下载按钮直接保存当前画布实际显示效果；渲染预览中的下载按钮单独保存模型返回的 1024 大图。普通浏览器导出 PNG；Hermit 当前没有任意二进制文件写入接口，因此内联合成画面导出为可打开的 SVG 预览，服务以文件返回的图片可原格式导出。
 - 使用 Hermit 内置的本地 Font Awesome Free，不访问 CDN；源文件无需构建即可运行。
+- 绘制热路径使用动画帧合并、离屏内容缓存和笔画边界缓存；历史缩略图按可视区域加载，图片解码与文件读写合并并设有容量上限，未变化画布不重复写入 Hermit 数据。
 
 ## 目录
 
@@ -32,22 +33,15 @@ app/features/              页面用例编排
 styles/                    设计令牌与组件样式
 tests/                     无第三方依赖的协议单元测试
 tools/verify.mjs           静态合同检查入口
+tools/performance-benchmark.mjs  可重复的克隆与存储分块基准
+docs/performance.md        HermitApp 性能设计与诊断不变量
 ```
 
-## ComfyUI workflow
+## ComfyUI VibeDraw workflow
 
-在 ComfyUI 中导出 API 格式的 workflow JSON，再将需要动态替换的输入改成这些占位符：
+安装 `comfyui-plugin/`（或发布的 `release/vibedraw-comfyui-plugin-v1.0.0.zip`）后，在 ComfyUI 工作流中放置一个 `VibeDraw Input` 和一个 `VibeDraw Output` 节点。Input 输出 `prompt`、`negative_prompt`、参考图、蒙版、`seed`、`ref_strength`、`steps`、`width` 和 `height`；用户把它们接到自己的文本编码、采样、重绘或 ControlNet 节点。最终图片接到 `VibeDraw Output`。
 
-- `{{prompt}}`
-- `{{negative_prompt}}`
-- `{{image}}`
-- `{{seed}}`
-- `{{steps}}`
-- `{{width}}`
-- `{{height}}`
-- `{{denoise}}`
-
-VibeDraw 会先调用 `/upload/image`，然后把完整 workflow 提交给 `/prompt`，轮询 `/history/{prompt_id}` 并读取首张输出图。工作流中的 checkpoint 和节点结构仍由用户控制。
+VibeDraw 将 API-format workflow 和当前输入提交到插件的 `/vibedraw/v1/jobs`，插件再调用 ComfyUI 原生队列。VibeDraw 轮询插件任务状态，并直接从 ComfyUI `/view` 读取输出图片；checkpoint、节点结构和具体模型仍由用户工作流控制。
 
 ## 验证
 
@@ -56,6 +50,8 @@ node tools/verify.mjs
 ```
 
 在打包前使用 `node tools/verify.mjs --source-only`。准备发布时运行 `python3 tools/package.py`，随后运行完整校验。打包仅归档原生源文件，不执行编译。
+
+性能架构与诊断入口见 [`docs/performance.md`](./docs/performance.md)，基准可运行 `node tools/performance-benchmark.mjs`。
 
 DEV 副本的 `#self-test` 入口覆盖绘图、撤销/重做、对象操作、蒙版、图片文件读回、历史恢复、主题、语言与布局合同；测试后恢复原有作品和设置，并删除临时测试作品。稳定通道不会执行此入口。模型出图需要用户自行配置的服务与密钥，不能用协议测试替代真实出图验收。
 

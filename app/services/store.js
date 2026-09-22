@@ -3,7 +3,7 @@
   var revisions = {}, chunkManifests = {}, saveTimer = 0, queue = Promise.resolve(), index = [], paused = false, savePending = false;
   var lastCanvasFingerprint = "", lastPersistedSnapshot = null;
   var CHUNK_SCHEMA = "vibedraw-chunked/v1", DIRECT_LIMIT = 30000, CHUNK_BYTES = 30000, IO_CONCURRENCY = 4, MAX_BYTES = 8 * 1024 * 1024;
-  var fields = ["prompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"];
+  var fields = ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"];
   function serial(task) { var next = queue.then(task); queue = next.catch(function () {}); return next; }
   async function readRaw(key, fallback) {
     var record = await app.platform.hermit.getData("vibedraw", key);
@@ -86,21 +86,40 @@
   function migrateConfig(stored) {
     var previousSchema = Number(stored && stored.schema) || 0;
     var original = app.utils.merge(app.defaults, stored || {});
-    var value = app.utils.copy(original), changed = previousSchema < 6;
-    ["quick", "quality"].forEach(function (name) {
+    var value = app.utils.copy(original), changed = previousSchema < 7;
+    if (previousSchema < 7) {
+      // Schema 7 split the two-model setup into the three CVP tasks: the old
+      // "quality" slot becomes the upscale task, and local redraw gains a slot
+      // of its own. A new install simply keeps the defaults.
+      value.upscale = app.utils.merge(app.utils.copy(app.defaults.upscale), stored && stored.quality || {});
+      delete value.quality;
+      if (!(stored && stored.inpaint)) {
+        value.inpaint = app.utils.merge(app.utils.copy(app.defaults.inpaint), {
+          protocol: value.quick.protocol, endpoint: value.quick.endpoint, apiKey: value.quick.apiKey
+        });
+      }
+    }
+    ["quick", "inpaint", "upscale"].forEach(function (name) {
       var model = value[name];
       if (!model) return;
       if (model.protocol === "a1x-flux") model.protocol = "a1x-image";
-      if (model.protocol !== "a1x-image") return;
-      if (previousSchema < 4 || [2, 4, 8].indexOf(Number(model.steps)) < 0) model.steps = name === "quick" ? 4 : 8;
-      model.width = model.height = name === "quick" ? 512 : 1024;
-      model.inputMode = "sketch";
-      model.guidanceScale = name === "quick" ? 2 : 1;
-      model.model = name === "quick" ? "dreamshaper8_lcm_blended_img2img_sd15" : (Number(model.steps) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4");
+      // The generic ComfyUI workflow contract was replaced by the plugin's own
+      // task API, so an old workflow slot becomes a CVP slot.
+      if (model.protocol === "comfyui") model.protocol = "cvp";
+      model.slot = name; model.task = name;
+      if (!Number.isFinite(Number(model.refStrength)) || Number(model.refStrength) <= 0) model.refStrength = app.defaults[name].refStrength;
+      if (!Number.isFinite(Number(model.growMaskBy))) model.growMaskBy = 8;
+      if (model.protocol === "a1x-image") {
+        if (previousSchema < 4 || [2, 4, 8].indexOf(Number(model.steps)) < 0) model.steps = name === "upscale" ? 8 : 4;
+        model.width = model.height = name === "upscale" ? 1024 : 512;
+        model.inputMode = "sketch";
+        model.guidanceScale = name === "upscale" ? 1 : 2;
+        model.model = name === "upscale" ? (Number(model.steps) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4") : "dreamshaper8_lcm_blended_img2img_sd15";
+      }
     });
     value.canvas = value.canvas || {};
     delete value.canvas.overlayGenerate; delete value.canvas.includeResult; delete value.canvas.resultOpacity;
-    value.schema = 6;
+    value.schema = 7;
     return { value: value, changed: changed || JSON.stringify(value) !== JSON.stringify(original), migrateWorkTitles: previousSchema < 6 };
   }
   function isUntitledTitle(title) { return /^(?:未命名作品\d+|Untitled artwork\s+\d+)$/.test(String(title || "")); }
@@ -176,7 +195,8 @@
     }
     if (result && !result.asset) result.asset = await app.services.assets.persist(result.src, null);
   }
-  function meaningful() { return Boolean(app.state.objects.length || app.state.result || String(app.state.prompt).trim() || String(app.state.workTitle).trim()); }
+  function meaningfulObjects() { return app.state.objects.some(function (object) { return !(object.type === "stroke" && object.tool === "mask"); }); }
+  function meaningful() { return Boolean(meaningfulObjects() || app.state.result || String(app.state.prompt).trim() || String(app.state.workTitle).trim()); }
   async function saveNow() {
     if (paused) return;
     app.events.emit("save", "saving");

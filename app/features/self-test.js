@@ -23,7 +23,7 @@
       step("drawing"); editor.resetWork(); app.state.autoGenerate = false; app.state.workTitle = "DEV self-test " + Date.now();
       app.state.autoDelayMs = 1320; app.state.resultGlow = 38; app.state.resultClarity = 24; app.state.colorStrength = 0.47; app.state.resultAdjustmentsEnabled = true;
       checks.defaultSeedLocked = app.state.seedLocked === true && Number.isSafeInteger(app.state.seed) && app.state.seed >= 0;
-      app.config.quick.endpoint = ""; app.config.quick.protocol = "a1x-image"; app.config.quick.model = "dreamshaper8_lcm_blended_img2img_sd15"; app.config.quality.endpoint = "";
+      app.config.quick.endpoint = ""; app.config.quick.protocol = "a1x-image"; app.config.quick.model = "dreamshaper8_lcm_blended_img2img_sd15"; app.config.inpaint.endpoint = ""; app.config.upscale.endpoint = "";
       var target = document.getElementById("draft-canvas"), rect = target.getBoundingClientRect();
       var Type = window.PointerEvent || window.MouseEvent;
       function fire(name, x, y, pointerId, isPrimary) {
@@ -123,9 +123,12 @@
       var search = document.getElementById("history-search"); search.value = "not-found-" + Date.now(); search.dispatchEvent(new Event("input", { bubbles: true }));
       checks.historySearch = document.querySelectorAll(".art-card").length === 0; ui.close();
       step("settings"); app.components.settings.open("models");
-      checks.twoModelTabs = document.querySelectorAll("[data-slot-tab]").length === 2;
-      document.querySelector('[data-slot-tab="quality"]').click();
-      checks.independentModelTabs = Boolean(document.querySelector('[data-model-card="quality"]'));
+      checks.threeTaskTabs = document.querySelectorAll("[data-slot-tab]").length === 3;
+      document.querySelector('[data-slot-tab="upscale"]').click();
+      checks.independentModelTabs = Boolean(document.querySelector('[data-model-card="upscale"]'));
+      checks.aspectLocked = Boolean(document.querySelector(".aspect-field")) && !document.querySelector('.aspect-field [name="width"]') && !document.querySelector('.aspect-field [name="steps"]');
+      document.querySelector('[data-slot-tab="inpaint"]').click();
+      checks.localRedrawTab = Boolean(document.querySelector('[data-model-card="inpaint"]'));
       checks.keyMasked = document.querySelector('[name="apiKey"]').type === "password";
       ui.close();
       app.components.settings.open("work");
@@ -251,18 +254,22 @@
       app.events.emit("canvas:interaction", false); await new Promise(function (resolve) { setTimeout(resolve, 130); });
       checks.fullscreenInteractionRestoresChrome = !document.body.classList.contains("canvas-interacting") && Number(getComputedStyle(document.querySelector(".canvas-bar")).opacity) > 0.95 && Number(getComputedStyle(document.getElementById("fullscreen-bottom")).opacity) > 0.95;
       fullscreenButton.click(); await new Promise(function (resolve) { requestAnimationFrame(resolve); }); checks.fullscreenExit = !document.body.classList.contains("canvas-fullscreen") && Boolean(document.querySelector("#canvas-fullscreen .fa-expand"));
-      app.components.renderPreview.open({ src: imageSrc, logicalFileId: "", slot: "quality" }); await new Promise(function (resolve) { requestAnimationFrame(resolve); });
+      app.components.renderPreview.open({ src: imageSrc, logicalFileId: "", slot: "upscale" }); await new Promise(function (resolve) { requestAnimationFrame(resolve); });
       await new Promise(function (resolve) { setTimeout(resolve, 30); });
       var preview = document.getElementById("render-preview"), previewTools = document.querySelector(".render-preview-tools");
       checks.renderPreview = !preview.hidden && getComputedStyle(preview).position === "fixed" && getComputedStyle(preview).width === window.innerWidth + "px" && getComputedStyle(document.getElementById("render-preview-stage")).position === "absolute" && getComputedStyle(document.getElementById("render-preview-stage")).touchAction === "none" && document.getElementById("render-preview-image").hidden && !document.getElementById("render-preview-surface").hidden && document.getElementById("render-preview-surface").width > 0 && Boolean(previewTools && getComputedStyle(previewTools).borderRadius !== "0px" && document.getElementById("render-preview-adjust") && document.querySelectorAll("[data-render-adjust]").length === 6 && document.getElementById("render-preview-download") && document.getElementById("render-preview-reset") && document.getElementById("render-preview-clear") && document.getElementById("render-preview-close"));
       app.components.renderPreview.close();
-      app.state.renderResult = { src: imageSrc, logicalFileId: "", slot: "quality", createdAt: Date.now() }; editor.syncAll();
+      app.state.renderResult = { src: imageSrc, logicalFileId: "", slot: "upscale", createdAt: Date.now() }; editor.syncAll();
       checks.renderResultChrome = !document.getElementById("render-result-trigger").hidden && document.getElementById("render-result-trigger").classList.contains("is-ready") && !document.getElementById("render-notice");
       app.events.emit("render:clear");
       checks.renderResultClear = app.state.renderResult === null && document.getElementById("render-result-trigger").hidden;
       checks.colorButtons = document.querySelectorAll('input[type="color"]').length === 0 && getComputedStyle(document.getElementById("background-color")).borderRadius === "50%";
       document.body.classList.remove("keyboard-focus"); document.getElementById("work-settings").focus();
       checks.noTapOutline = getComputedStyle(document.getElementById("work-settings")).outlineStyle === "none";
+      app.components.settings.open("models");
+      var advancedSummary = document.querySelector("details.advanced > summary");
+      if (advancedSummary) { document.body.classList.add("keyboard-focus"); advancedSummary.focus(); checks.advancedNoOutline = getComputedStyle(advancedSummary).outlineStyle === "none"; }
+      document.body.classList.remove("keyboard-focus"); ui.close();
       checks.brandLeft = document.querySelector(".brand").getBoundingClientRect().left <= 24 && document.getElementById("app-version").textContent === "v" + app.version;
       var performanceState = canvas.performance(), assetPerformance = app.services.assets.performance();
       checks.performanceBounds = performanceState.imageCache.entries <= 16 && performanceState.historyEntries <= 60 && assetPerformance.cache.entries <= 10;

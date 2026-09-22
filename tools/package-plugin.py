@@ -7,7 +7,7 @@ the happ archive this is byte-for-byte reproducible: fixed timestamps, sorted
 entries, no compression surprises.
 
 Usage:
-  python3 tools/package-plugin.py           # build release/vibedraw-comfyui-plugin-v1.0.0.zip
+  python3 tools/package-plugin.py           # build release/vibedraw-comfyui-plugin-v2.0.0.zip
   python3 tools/package-plugin.py --check   # rebuild in memory and compare digests
 """
 
@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "comfyui-plugin"
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 ARCHIVE = ROOT / "release" / f"vibedraw-comfyui-plugin-v{VERSION}.zip"
 FIXED_TIMESTAMP = (2026, 9, 17, 0, 0, 0)
 ENTRIES = ("vibedraw_comfy", "README.md")

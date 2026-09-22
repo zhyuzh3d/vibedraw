@@ -58,6 +58,7 @@
           <img id="result-image" class="result-image" alt="AI result" hidden>
           <img id="result-glow-image" class="result-image result-glow-image" alt="" aria-hidden="true" hidden>
           <canvas id="draft-canvas" class="draft-canvas" width="768" height="768" aria-label="Drawing canvas"></canvas>
+          <canvas id="mask-canvas" class="mask-canvas" width="768" height="768" aria-hidden="true"></canvas>
           <canvas id="selection-canvas" class="selection-canvas" width="768" height="768" aria-hidden="true"></canvas>
           <div class="stage-empty" id="stage-empty"><i class="fa-solid fa-pen-nib"></i><strong data-zh="从一笔开始" data-en="Start with a stroke">从一笔开始</strong><span data-zh="简单的线条，也有无限可能" data-en="A simple shape. Endless possibilities.">简单的线条，也有无限可能</span></div>
           <button class="render-result-trigger" id="render-result-trigger" type="button" hidden data-zh="查看高清渲染" data-en="View high-resolution render" data-i18n-attr="aria-label" data-help-zh="打开高清渲染全屏预览。" data-help-en="Open the high-resolution render in fullscreen preview."><i class="fa-regular fa-gem" aria-hidden="true"></i></button>
@@ -88,6 +89,11 @@
           <div class="draw-options" id="draw-options">
             <button class="color-control color-button" id="stroke-color" type="button" data-zh="画笔颜色" data-en="Stroke color" data-i18n-attr="aria-label" data-help-zh="设置铅笔或涂色工具的颜色与透明度。" data-help-en="Set the pencil or brush color and opacity."></button>
             <div class="stroke-controls"><label class="stroke-control"><span id="size-label" data-zh="粗细" data-en="Size">粗细</span><input id="brush-size" type="range" min="1" max="96" value="18"><output id="brush-size-value">18</output></label><label class="stroke-control" id="stroke-opacity-control"><span data-zh="透明" data-en="Opacity">透明</span><input id="stroke-opacity" type="range" min="5" max="100" value="72"><output id="stroke-opacity-value">72%</output></label></div>
+            <button class="icon-control mask-clear-control" id="mask-clear" type="button" hidden data-zh="清除局部标记" data-en="Clear local marks" data-i18n-attr="aria-label" data-help-zh="清除画布上所有红色局部标记，重新开始标记。" data-help-en="Remove every red local mark on the canvas and start marking again."><i class="fa-solid fa-eraser" aria-hidden="true"></i></button>
+            <div class="local-prompt-options" id="local-prompt-options" hidden>
+              <button class="local-prompt-button" id="local-prompt" type="button" data-zh="局部重绘描述" data-en="Local change description" data-i18n-attr="aria-label" data-help-zh="描述红色标记区域要改成什么，会与顶部画面描述一起提交给模型。" data-help-en="Describe what the marked area should become; submitted together with the artwork description."><span id="local-prompt-summary"></span></button>
+              <button class="icon-control local-prompt-edit" id="local-prompt-edit" type="button" data-zh="填写局部重绘描述" data-en="Write the local change description" data-i18n-attr="aria-label" data-help-zh="打开输入框，填写这一块要改成什么。" data-help-en="Open a dialog and write what this area should become."><i class="fa-solid fa-keyboard" aria-hidden="true"></i></button>
+            </div>
             <button class="color-control color-button bg-control" id="background-color" type="button" data-zh="画布底色" data-en="Canvas background" data-i18n-attr="aria-label" data-help-zh="设置画布与模型参考图使用的真实背景色。" data-help-en="Set the solid background used by the canvas and model reference."><span aria-hidden="true">BG</span></button>
           </div>
           <div id="selection-options" class="selection-options" hidden><span id="selection-hint"></span><div id="selection-actions" hidden>

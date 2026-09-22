@@ -1,6 +1,6 @@
 (function (app) {
   "use strict";
-  var t = app.i18n.text, ui, canvas, initial, imageSource = "", resizeTask, canvasSyncTask, opacityAnimationFrame = 0, resultOpacityAnimationFrame = 0, renderResultPresent = false, canvasPanX = 0, promptDrag = null;
+  var t = app.i18n.text, ui, canvas, initial, imageSource = "", resizeTask, canvasSyncTask, opacityAnimationFrame = 0, resultOpacityAnimationFrame = 0, renderResultPresent = false, canvasPanX = 0, promptDrag = null, maskMode = false;
   var fullscreenPan = { timer: 0, active: false, moved: false, suppressClick: false, startX: 0, startPan: 0, wasCollapsed: false };
   var adjustmentNames = ["resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity"];
   var neutralAdjustments = { resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
@@ -10,7 +10,7 @@
   function init() {
     ui = app.components.ui; canvas = app.components.canvas; resizeTask = app.runtime.createFrameTask(resizeStage); canvasSyncTask = app.runtime.createFrameTask(syncCanvas);
     app.components.gallery.init({ newWork: newWork, resetWork: resetWork, syncAll: syncAll });
-    initial = { objects: [], result: null, prompt: "", workId: "", workTitle: "", background: "#ffffff", negativePrompt: app.config.canvas.negativePrompt || "", seed: randomSeed(), seedLocked: true, strength: 0.8, colorStrength: 0.3, autoDelayMs: Number(app.config.canvas.autoDelayMs) || 850, overlayGenerate: false, resultOpacity: 0.9, layerOpacity: 1, resultVisible: true, resultBrightness: configuredAdjustment("resultBrightness"), resultContrast: configuredAdjustment("resultContrast"), resultSaturation: configuredAdjustment("resultSaturation"), resultHue: configuredAdjustment("resultHue"), resultGlow: configuredAdjustment("resultGlow"), resultClarity: configuredAdjustment("resultClarity"), resultAdjustmentsEnabled: app.config.canvas.resultAdjustmentsEnabled !== false };
+    initial = { objects: [], result: null, prompt: "", localPrompt: "", workId: "", workTitle: "", background: "#ffffff", negativePrompt: app.config.canvas.negativePrompt || "", seed: randomSeed(), seedLocked: true, strength: 0.8, colorStrength: 0.3, autoDelayMs: Number(app.config.canvas.autoDelayMs) || 850, overlayGenerate: false, resultOpacity: 0.9, layerOpacity: 1, resultVisible: true, resultBrightness: configuredAdjustment("resultBrightness"), resultContrast: configuredAdjustment("resultContrast"), resultSaturation: configuredAdjustment("resultSaturation"), resultHue: configuredAdjustment("resultHue"), resultGlow: configuredAdjustment("resultGlow"), resultClarity: configuredAdjustment("resultClarity"), resultAdjustmentsEnabled: app.config.canvas.resultAdjustmentsEnabled !== false };
     node("app-version").textContent = "v" + app.version;
     bindMenu(); bindTools(); bindOptions(); bindActions(); bindGeneration(); bindPromptControls(); bindActionHelp();
     app.events.on("canvas:rendered", syncCanvas);
@@ -71,7 +71,9 @@
     });
   }
   function bindTools() {
-    document.querySelectorAll("[data-tool]").forEach(function (button) { button.onclick = function () { setTool(button.dataset.tool); }; });
+    document.querySelectorAll("[data-tool]").forEach(function (button) {
+      button.onclick = function () { if (button.dataset.tool === "mask") requestMaskTool(); else setTool(button.dataset.tool); };
+    });
     node("add-image").onclick = ui.action(async function () {
       var file = await app.platform.hermit.pickImage();
       if (file) { if (!file.cancelled) await canvas.addImage(file); }
@@ -87,6 +89,8 @@
   }
   function setTool(tool, keepView) {
     if (["pencil", "brush", "eraser", "select", "mask"].indexOf(tool) < 0) return;
+    if (tool === "mask") enterMaskMode();
+    else if (maskMode) exitMaskMode();
     app.state.tool = tool;
     if (tool !== "select") { app.state.selectedId = ""; app.state.selectedIds = []; }
     document.querySelectorAll("[data-tool]").forEach(function (button) {
@@ -95,14 +99,80 @@
     node("draft-canvas").style.cursor = tool === "select" ? "grab" : "crosshair";
     node("draw-options").hidden = tool === "select"; node("selection-options").hidden = tool !== "select";
     node("stroke-color").hidden = tool === "eraser" || tool === "mask"; node("stroke-opacity-control").hidden = tool === "eraser" || tool === "mask";
+    node("background-color").hidden = maskMode;
     node("size-label").textContent = tool === "mask" ? t("区域", "Area") : tool === "eraser" ? t("范围", "Size") : t("粗细", "Size");
-    syncSelection(); canvas.refresh();
+    node("draw-options").classList.toggle("is-eraser", tool === "eraser");
+    syncMaskUi(); syncSelection(); canvas.refresh();
+  }
+  function hasResultImage() { return Boolean(app.state.result && app.state.result.src); }
+  function enterMaskMode() {
+    if (maskMode) return true;
+    if (!hasResultImage()) return false;
+    maskMode = true; app.state.maskMode = true;
+    app.services.imageEngine.stopAuto();
+    status(t("局部模式：涂红要改的区域，再点「描述」写这一块要改成什么", "Local mode: mark the area in red, then describe what it should become"));
+    return true;
+  }
+  function exitMaskMode() {
+    if (!maskMode) { app.state.maskMode = false; return; }
+    maskMode = false; app.state.maskMode = false;
+    if (canvas.hasMask()) status(t("已退出局部模式：红色标记已隐藏并保留，下次进入局部会继续显示，也不再参与生成", "Left local mode. Red marks are hidden but kept for your next local edit, and no longer affect generation"));
+    syncMaskUi();
+  }
+  function requestMaskTool() {
+    if (!hasResultImage()) { status(t("先用「快速」或随机按钮生成成图，再标记要改的局部", "Generate a result with Fast or the dice first, then mark the area to change")); ui.toast(t("还没有成图，不能使用局部", "No result yet. Local mode is unavailable"), "error"); return; }
+    setTool("mask");
+  }
+  function syncMaskUi() {
+    var masking = Boolean(maskMode);
+    node("draw-options").classList.toggle("is-mask", masking);
+    node("mask-clear").hidden = !masking;
+    node("local-prompt-options").hidden = !masking;
+    node("auto-toggle").disabled = masking;
+    node("overlay-toggle").disabled = masking;
+    syncLocalPrompt();
+    syncMaskAvailability();
+  }
+  function syncMaskAvailability() {
+    var button = document.querySelector('[data-tool="mask"]'), available = hasResultImage();
+    if (!button) return;
+    button.classList.toggle("is-disabled", !available);
+    button.setAttribute("aria-disabled", String(!available));
+    button.setAttribute("aria-label", available ? t("局部重绘：标记要改的区域", "Local redraw: mark the area to change") : t("需要先有一张成图", "A generated result is required first"));
+  }
+  function localPromptValue() { return String(app.state.localPrompt || "").trim(); }
+  function syncLocalPrompt() {
+    var localPrompt = localPromptValue(), summary = node("local-prompt-summary");
+    if (!summary) return;
+    summary.textContent = localPrompt || t("描述这块要改成什么", "Describe this area");
+    node("local-prompt").classList.toggle("is-placeholder", !localPrompt);
+  }
+  function editLocalPrompt() {
+    var root = ui.open({ mode: "center", title: t("局部重绘描述", "Local change description"), html: '<label class="field"><span>' + t("这一块要改成什么", "What should this area become") + '</span><textarea id="local-prompt-input" rows="3" maxlength="400"></textarea></label><p class="field-help">' + t("提交给模型时会与顶部画面描述拼接：整体描述 + 局部改动。", "The model receives the artwork description joined with this local change.") + '</p><p class="field-help" id="local-prompt-preview"></p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
+    var input = root.querySelector("#local-prompt-input"), preview = root.querySelector("#local-prompt-preview");
+    input.value = String(app.state.localPrompt || "");
+    input.placeholder = t("例如：把这里改成一只白色的猫", "e.g. turn this area into a white cat");
+    function refreshPreview() { preview.textContent = t("将会提交：", "Will submit: ") + (app.utils.composePrompt(app.state.prompt, input.value) || t("（空）", "(empty)")); }
+    input.addEventListener("input", refreshPreview); refreshPreview();
+    root.querySelector("[data-cancel]").onclick = ui.close;
+    root.querySelector("[data-save]").onclick = ui.action(async function () {
+      app.state.localPrompt = input.value.trim();
+      syncLocalPrompt(); app.services.store.scheduleCanvasSave(); ui.close();
+      status(app.state.localPrompt ? t("局部描述已保存，点「快速」或随机按钮重绘这块区域", "Local description saved. Use Fast or the dice to redraw this area") : t("局部描述已清空", "Local description cleared"));
+    });
   }
   function bindOptions() {
     node("stroke-color").onclick = function () { app.components.settings.openColor("stroke"); };
     node("brush-size").oninput = function (event) { app.state.size = Number(event.target.value); node("brush-size-value").textContent = event.target.value; app.services.store.scheduleCanvasSave(); };
     node("stroke-opacity").oninput = function (event) { app.state.opacity = Number(event.target.value) / 100; node("stroke-opacity-value").textContent = event.target.value + "%"; app.services.store.scheduleCanvasSave(); };
     node("background-color").onclick = function () { app.components.settings.openColor("background"); };
+    node("local-prompt").onclick = editLocalPrompt;
+    node("local-prompt-edit").onclick = editLocalPrompt;
+    node("mask-clear").onclick = ui.action(async function () {
+      var removed = canvas.clearMask();
+      syncCanvas(); app.services.store.scheduleCanvasSave();
+      status(removed ? t("局部标记已清除，可以重新涂出要改的区域", "Local marks cleared. Mark the area again") : t("当前没有局部标记", "No local marks to clear"));
+    });
     node("result-opacity").oninput = function (event) {
       var value = Number(event.target.value) / 100;
       if (app.state.overlayGenerate) app.state.layerOpacity = value; else app.state.resultOpacity = value;
@@ -154,7 +224,7 @@
       node("generate-quick").click();
     };
     node("generate-quick").onclick = function () { app.services.imageEngine.run("quick", false); };
-    node("generate-quality").onclick = function () { app.services.imageEngine.run("quality", false); };
+    node("generate-quality").onclick = function () { app.services.imageEngine.run("upscale", false); };
     node("render-result-trigger").onclick = openRenderPreview;
     node("overlay-toggle").onclick = function () {
       setOverlayGenerate(!app.state.overlayGenerate, true); app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule();
@@ -182,7 +252,9 @@
       if ((key === "delete" || key === "backspace") && app.state.tool === "select") { event.preventDefault(); canvas.removeSelected(); return; }
       if (key === "escape" && document.body.classList.contains("canvas-fullscreen")) { event.preventDefault(); setCanvasFullscreen(false); return; }
       if (modifier) return;
-      var tool = { p: "pencil", b: "brush", e: "eraser", v: "select", m: "mask" }[key]; if (tool) setTool(tool);
+      var tool = { p: "pencil", b: "brush", e: "eraser", v: "select" }[key];
+      if (key === "m") { requestMaskTool(); return; }
+      if (tool) setTool(tool);
     });
   }
   function bindGeneration() {
@@ -199,13 +271,13 @@
     };
     app.events.on("generation:start", function (detail) {
       node("stage-busy").hidden = false;
-      node("busy-label").textContent = detail.slot === "quality" ? t("正在渲染 1024 大图，仍可继续画", "Rendering 1024 image · keep drawing") : t("生成中，仍可继续画", "Generating · keep drawing");
+      node("busy-label").textContent = detail.slot === "upscale" ? t("正在渲染高清大图，仍可继续画", "Rendering a high-resolution image · keep drawing") : t("生成中，仍可继续画", "Generating · keep drawing");
       node("generate-quick").disabled = true; node("generate-quality").disabled = true;
       status(t("正在处理当前画面…", "Processing your sketch…"));
     });
     app.events.on("generation:done", function (result) {
       syncCanvas();
-      if (result && result.slot === "quality") { app.state.renderResult = result; syncRenderResult(true); status(t("高清渲染完成，可在画布右下角查看", "High-resolution render complete. View it from the diamond on the canvas.")); }
+      if (result && result.slot === "upscale") { app.state.renderResult = result; syncRenderResult(true); status(t("高清渲染完成，可在画布右下角查看", "High-resolution render complete. View it from the diamond on the canvas.")); }
       else { animateResultOpacityFloor(); status(t("成图已返回，正在显示…", "Result received · displaying…")); }
     });
     app.events.on("generation:progress", function (message) { node("busy-label").textContent = String(message || ""); status(message); });
@@ -273,22 +345,23 @@
     var state = app.state, image = node("result-image"), glow = node("result-glow-image"), hasResult = Boolean(state.result && state.result.src);
     if (hasResult && state.result.src !== imageSource) { imageSource = state.result.src; image.src = imageSource; glow.src = imageSource; }
     if (!hasResult && imageSource) { imageSource = ""; image.removeAttribute("src"); glow.removeAttribute("src"); }
-    var resultVisible = state.resultVisible !== false, overlay = Boolean(state.overlayGenerate);
-    var resultOpacity = Math.max(0, Math.min(1, Number(state.resultOpacity == null ? 0.9 : state.resultOpacity)));
+    var masking = Boolean(maskMode);
+    var resultVisible = masking ? true : state.resultVisible !== false, overlay = masking ? false : Boolean(state.overlayGenerate);
+    var resultOpacity = masking ? 1 : Math.max(0, Math.min(1, Number(state.resultOpacity == null ? 0.9 : state.resultOpacity)));
     var layerOpacity = Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity)));
     canvas.syncSharpenFilter(); image.hidden = !hasResult || !resultVisible; image.style.filter = canvas.resultFilter(); image.style.opacity = String(resultOpacity);
     glow.hidden = !hasResult || !resultVisible || state.resultAdjustmentsEnabled === false || Number(state.resultGlow) <= 0; glow.style.filter = canvas.resultGlowFilter(); glow.style.opacity = String(resultOpacity * Math.min(0.62, Number(state.resultGlow) / 150));
     image.style.zIndex = overlay ? "1" : "4"; glow.style.zIndex = overlay ? "1" : "5";
-    node("draft-canvas").hidden = false; node("draft-canvas").style.opacity = String(overlay ? layerOpacity : 1);
-    node("stage-empty").hidden = state.objects.length > 0 || hasResult;
-    node("clear-canvas").disabled = !state.objects.length;
+    node("draft-canvas").hidden = false; node("draft-canvas").style.opacity = String(masking ? 0 : overlay ? layerOpacity : 1);
+    node("stage-empty").hidden = canvas.contentCount() > 0 || hasResult;
+    node("clear-canvas").disabled = canvas.contentCount() === 0;
     node("export-image").disabled = false;
-    var activeOpacity = overlay ? layerOpacity : resultOpacity;
+    var activeOpacity = masking ? 1 : overlay ? layerOpacity : resultOpacity;
     node("result-opacity").value = String(Math.round(activeOpacity * 100));
     node("result-opacity-value").textContent = node("result-opacity").value + "%";
-    node("result-opacity").disabled = overlay ? state.objects.length === 0 : !hasResult;
-    node("opacity-target-label").textContent = overlay ? t("元素容器透明度", "Element layer opacity") : t("成图透明度", "Result opacity");
-    var visibility = node("result-visibility"); visibility.disabled = !hasResult; visibility.setAttribute("aria-pressed", String(resultVisible));
+    node("result-opacity").disabled = masking ? true : overlay ? canvas.contentCount() === 0 : !hasResult;
+    node("opacity-target-label").textContent = masking ? t("局部模式：成图固定不透明", "Local mode: result stays opaque") : overlay ? t("元素容器透明度", "Element layer opacity") : t("成图透明度", "Result opacity");
+    var visibility = node("result-visibility"); visibility.disabled = masking || !hasResult; visibility.setAttribute("aria-pressed", String(resultVisible));
     visibility.setAttribute("aria-label", resultVisible ? t("隐藏成图", "Hide result") : t("显示成图", "Show result"));
     visibility.querySelector("i").className = "fa-solid " + (resultVisible ? "fa-eye" : "fa-eye-slash");
   }
@@ -484,7 +557,7 @@
     promptDisplay.textContent = promptText || t("在作品设置中填写画面描述", "Add an image description in Artwork settings"); promptDisplay.classList.toggle("is-placeholder", !promptText); syncPromptStrength();
     node("history-count").textContent = app.services.store.list().length;
     node("save-state").textContent = app.services.store.meaningful() ? t("已保存", "Saved") : t("自动保存", "Autosave");
-    syncAuto(); syncOverlayGenerate(); syncSeedLock(); syncAdjustments(); syncCanvas(); syncRenderResult(); setTool(app.state.tool, true); setFullscreenToolsCollapsed(document.body.classList.contains("fullscreen-tools-collapsed")); resizeStage();
+    syncAuto(); syncOverlayGenerate(); syncSeedLock(); syncAdjustments(); syncCanvas(); syncRenderResult(); syncMaskUi(); setTool(app.state.tool, true); setFullscreenToolsCollapsed(document.body.classList.contains("fullscreen-tools-collapsed")); resizeStage();
   }
   function resetWork() { var next = app.utils.copy(initial); next.seed = randomSeed(); next.seedLocked = true; canvas.load(next); app.state.renderResult = null; app.state.tool = "pencil"; syncAll(); }
   function nextUntitledTitle() {

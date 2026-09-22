@@ -2,7 +2,7 @@
   "use strict";
 
   var state = app.state;
-  var canvas, context, contentCanvas, contentContext, selectionCanvas, selectionContext, frameTask, selectionTask;
+  var canvas, context, contentCanvas, contentContext, selectionCanvas, selectionContext, maskCanvas, maskContext, maskContentCanvas, maskContentContext, frameTask, selectionTask;
   var drawingObject = null;
   var dragging = null;
   var resizing = null;
@@ -83,6 +83,9 @@
     selectionCanvas = document.getElementById("selection-canvas");
     selectionContext = selectionCanvas.getContext("2d");
     contentCanvas = document.createElement("canvas"); contentCanvas.width = WIDTH; contentCanvas.height = WIDTH; contentContext = contentCanvas.getContext("2d");
+    maskCanvas = document.getElementById("mask-canvas");
+    maskContext = maskCanvas ? maskCanvas.getContext("2d") : null;
+    maskContentCanvas = document.createElement("canvas"); maskContentCanvas.width = WIDTH; maskContentCanvas.height = WIDTH; maskContentContext = maskContentCanvas.getContext("2d");
     frameTask = app.runtime.createFrameTask(paintFrame);
     selectionTask = app.runtime.createFrameTask(function (ids) { app.events.emit("selection", ids); });
     bindInput();
@@ -153,7 +156,7 @@
       id: app.utils.id("stroke"),
       type: "stroke",
       tool: state.tool,
-      color: state.tool === "mask" ? "#ee4f85" : state.color,
+      color: state.tool === "mask" ? "#e5484d" : state.color,
       width: state.tool === "pencil" ? Math.max(1, Math.round(state.size / 3)) : state.tool === "eraser" ? Math.max(8, state.size * 1.6) : state.size,
       opacity: state.tool === "mask" ? 0.55 : state.tool === "eraser" ? 1 : state.opacity,
       points: [p]
@@ -441,7 +444,7 @@
     ctx.save();
     ctx.globalCompositeOperation = object.tool === "eraser" ? "destination-out" : "source-over";
     ctx.globalAlpha = object.opacity;
-    ctx.strokeStyle = object.tool === "mask" && maskPreview ? "#ee4f85" : object.color;
+    ctx.strokeStyle = object.tool === "mask" && maskPreview ? "#e5484d" : object.color;
     ctx.lineWidth = object.width;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -491,8 +494,10 @@
   }
   function rebuildContent() {
     contentContext.clearRect(0, 0, WIDTH, WIDTH);
+    maskContentContext.clearRect(0, 0, WIDTH, WIDTH);
     state.objects.forEach(function (object) {
       if (object === drawingObject) return;
+      if (isMaskStroke(object)) { drawStroke(maskContentContext, object, true); return; }
       if (object.type === "stroke") drawStroke(contentContext, object, true);
       else drawImageObject(contentContext, object);
       performance.objectsDrawn += 1;
@@ -506,7 +511,14 @@
     context.clearRect(0, 0, WIDTH, WIDTH);
     selectionContext.clearRect(0, 0, WIDTH, WIDTH);
     context.drawImage(contentCanvas, 0, 0);
-    if (drawingObject) drawStroke(context, drawingObject, true);
+    if (maskContext) {
+      maskContext.clearRect(0, 0, WIDTH, WIDTH);
+      if (state.maskMode) {
+        maskContext.drawImage(maskContentCanvas, 0, 0);
+        if (isMaskStroke(drawingObject)) drawStroke(maskContext, drawingObject, true);
+      }
+    }
+    if (drawingObject && !isMaskStroke(drawingObject)) drawStroke(context, drawingObject, true);
     var selected = selectedObjects();
     if (selected.length && !selectionMarquee) {
       var box = selectionBounds(selected);
@@ -529,7 +541,9 @@
       selectionContext.strokeRect(marqueeBox.x, marqueeBox.y, marqueeBox.width, marqueeBox.height);
       selectionContext.restore();
     }
-    var opacity = String(state.overlayGenerate ? Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))) : 1);
+    var opacity = "1";
+    if (state.maskMode) opacity = "0";
+    else if (state.overlayGenerate) opacity = String(Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))));
     var background = document.getElementById("stage-background");
     if (lastBackgroundStyle !== state.background) { background.style.background = state.background; lastBackgroundStyle = state.background; }
     if (lastOpacityStyle !== opacity) { canvas.style.opacity = opacity; lastOpacityStyle = opacity; }
@@ -664,7 +678,20 @@
     render(); commit();
     app.events.emit("tool", "select");
   }
-  function hasMask() { return state.objects.some(function (object) { return object.type === "stroke" && object.tool === "mask"; }); }
+  function isMaskStroke(object) { return Boolean(object && object.type === "stroke" && object.tool === "mask"); }
+  function maskStrokes() { return state.objects.filter(isMaskStroke); }
+  function hasMask() { return state.objects.some(isMaskStroke); }
+  function contentCount() { return state.objects.length - maskStrokes().length; }
+  function clearMask() {
+    var removed = 0;
+    for (var index = state.objects.length - 1; index >= 0; index -= 1) {
+      if (!isMaskStroke(state.objects[index])) continue;
+      state.objects.splice(index, 1); removed += 1;
+    }
+    if (!removed) return 0;
+    setSelection([]); render(); commit();
+    return removed;
+  }
   async function drawObjectList(targetContext, includeMask, opacity, objects) {
     var layer = document.createElement("canvas"); layer.width = WIDTH; layer.height = WIDTH;
     var layerContext = layer.getContext("2d");
@@ -684,12 +711,14 @@
   function captureComposition() {
     var currentResultOpacity = Number(state.resultOpacity);
     if (!Number.isFinite(currentResultOpacity)) currentResultOpacity = 1;
+    var masking = Boolean(state.maskMode);
     return {
       background: state.background || "#ffffff",
-      overlayGenerate: Boolean(state.overlayGenerate),
-      resultOpacity: Math.max(0, Math.min(1, currentResultOpacity)),
-      layerOpacity: Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))),
-      resultVisible: state.resultVisible !== false,
+      localMode: masking,
+      overlayGenerate: masking ? false : Boolean(state.overlayGenerate),
+      resultOpacity: masking ? 1 : Math.max(0, Math.min(1, currentResultOpacity)),
+      layerOpacity: masking ? 0 : Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))),
+      resultVisible: masking ? true : state.resultVisible !== false,
       resultSrc: state.result && state.result.src || "",
       resultBrightness: state.resultBrightness,
       resultContrast: state.resultContrast,
@@ -698,7 +727,7 @@
       resultGlow: state.resultGlow,
       resultClarity: state.resultClarity,
       resultAdjustmentsEnabled: state.resultAdjustmentsEnabled !== false,
-      objects: app.drawing.cloneObjects(state.objects)
+      objects: masking ? [] : app.drawing.cloneObjects(state.objects)
     };
   }
   async function drawCompositionResult(ctx, composition) {
@@ -719,7 +748,7 @@
       await drawObjectList(ctx, false, composition.layerOpacity, composition.objects);
     } else {
       await drawObjectList(ctx, false, 1, composition.objects);
-      if (visibleSnapshot) await drawCompositionResult(ctx, composition);
+      if (visibleSnapshot || composition.localMode) await drawCompositionResult(ctx, composition);
     }
     return output;
   }
@@ -802,7 +831,7 @@
   }
   function load(saved) {
     if (!saved) return;
-    ["prompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"].forEach(function (key) {
+    ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"].forEach(function (key) {
       if (saved[key] !== undefined) state[key] = saved[key];
     });
     state.objects = saved.objects || [];
@@ -854,6 +883,9 @@
     load: load,
     thumbnail: thumbnail,
     hasMask: hasMask,
+    contentCount: contentCount,
+    maskStrokes: maskStrokes,
+    clearMask: clearMask,
     selectionHandles: function () { return selectionHandles(selectedObjects()); },
     resultFilter: resultFilter,
     resultGlowFilter: resultGlowFilter,

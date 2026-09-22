@@ -32,7 +32,15 @@ const utils = context.vibedraw.utils;
 const internals = context.vibedraw.services.providers.internals;
 
 assert.equal(internals.openAiRoot("https://api.openai.com/v1/images/edits"), "https://api.openai.com/v1");
-assert.equal(internals.comfyRoot("http://192.168.1.2:8188/prompt"), "http://192.168.1.2:8188");
+assert.equal(internals.cvpBase("http://192.168.1.2:8188"), "http://192.168.1.2:8188");
+assert.equal(internals.cvpBase("http://192.168.1.2:8188/vibedraw/v1"), "http://192.168.1.2:8188");
+assert.equal(internals.cvpBase("http://192.168.1.2:8188/vibedraw/v1/jobs"), "http://192.168.1.2:8188");
+assert.equal(internals.cvpTask({ slot: "inpaint" }), "inpaint");
+assert.equal(internals.cvpTask({ task: "upscale", slot: "quick" }), "upscale");
+assert.equal(internals.cvpTask({ slot: "unexpected" }), "quick");
+assert.equal(internals.cvpStrength({ refStrength: 0.55 }, 0.8), 0.55);
+assert.ok(Math.abs(internals.cvpStrength({ refStrength: 0.3 }, 0.4) - 0.15) < 1e-9, "half the artwork setting must halve the reference weight");
+assert.equal(internals.cvpStrength({ refStrength: 0.55 }, 1.6), 0.95, "the reference weight must clamp at the maximum");
 assert.equal(internals.a1xRoot("http://192.168.124.31:8188/api/a1x-h3/v2/jobs"), "http://192.168.124.31:8188");
 assert.equal(internals.aspect(1024, 1024), "1:1");
 assert.equal(internals.aspect(1536, 768), "16:9");
@@ -114,39 +122,58 @@ assert.equal(submitted.guidance_scale, 2);
 assert.equal(submitted.output.resolution_tier, "compact512");
 assert.equal(submitted.seed, 7);
 
-const comfyCalls = [];
+const cvpCalls = [];
+let cvpPolls = 0;
 context.vibedraw.platform.hermit.request = async options => {
-  comfyCalls.push(options);
-  if (options.url.includes("/view?")) return { status: 200, headers: { "Content-Type": "image/png" }, bodyBase64: "YWJj" };
-  throw new Error("unexpected comfy request " + options.url);
+  cvpCalls.push(options);
+  if (options.method === "POST" && options.url.endsWith("/vibedraw/v1/jobs")) {
+    return { status: 202, bodyText: JSON.stringify({ job: { id: "job_cvp", task: "inpaint", state: "queued", progress: 0, outputs: [] } }) };
+  }
+  if (/\/vibedraw\/v1\/jobs\/job_cvp$/.test(options.url)) {
+    cvpPolls += 1;
+    return { status: 200, bodyText: JSON.stringify({ job: cvpPolls === 1
+      ? { id: "job_cvp", task: "inpaint", state: "running", progress: 0.4, outputs: [] }
+      : { id: "job_cvp", task: "inpaint", state: "completed", progress: 1, outputs: [{ filename: "inpaint_00001_.png", subfolder: "vibedraw", type: "output", url: "/vibedraw/v1/jobs/job_cvp/output/0" }] } }) };
+  }
+  if (options.url.endsWith("/vibedraw/v1/jobs/job_cvp/output/0")) return { status: 200, headers: { "Content-Type": "image/png" }, bodyBase64: "YWJj" };
+  throw new Error("unexpected CVP request " + options.url);
 };
-let comfyPolls = 0;
-context.vibedraw.platform.hermit.requestJson = async options => {
-  comfyCalls.push(options);
-  if (options.method === "POST") return { data: { job_id: "prompt_comfy", state: "queued" } };
-  comfyPolls += 1;
-  return { data: comfyPolls === 1 ? { job_id: "prompt_comfy", state: "running", outputs: [] } : { job_id: "prompt_comfy", state: "succeeded", outputs: [{ filename: "vibedraw.png", subfolder: "", type: "output" }] } };
-};
-const comfyTemplate = {
-  "10": { class_type: "VibeDrawInput", inputs: {} },
-  "11": { class_type: "VibeDrawOutput", inputs: {} }
-};
-const comfyResult = await context.vibedraw.services.providers.generate({
-  slot: "quick", protocol: "comfyui", endpoint: "http://192.168.124.31:8188", apiKey: "comfy-secret",
-  model: "由 workflow 决定", inputMode: "sketch", width: 512, height: 512, steps: 8, timeoutMs: 30000,
-  customHeaders: "", workflow: JSON.stringify(comfyTemplate)
+const cvpResult = await context.vibedraw.services.providers.generate({
+  slot: "inpaint", task: "inpaint", protocol: "cvp", endpoint: "http://192.168.1.2:8188/vibedraw/v1",
+  apiKey: "cvp-secret", model: "", inputMode: "sketch", width: 512, height: 512, steps: 6,
+  refStrength: 0.55, growMaskBy: 12, timeoutMs: 30000, customHeaders: ""
 }, {
-  prompt: "blue crystal", negativePrompt: "blur", seed: 42, strength: 0.73,
+  prompt: "a golden crown", negativePrompt: "blur", seed: 42, strength: 0.8,
   imageDataUrl: "data:image/png;base64,YWJj", maskDataUrl: "data:image/png;base64,ZEZn"
 });
-assert.equal(comfyResult.src, "data:image/png;base64,YWJj");
-const comfySubmission = JSON.parse(comfyCalls.find(call => call.method === "POST" && call.url.endsWith("/jobs")).bodyText);
-assert.equal(comfySubmission.workflow["10"].class_type, "VibeDrawInput");
-assert.equal(comfySubmission.inputs.ref_strength, 0.73);
-assert.equal(comfySubmission.inputs.steps, 8);
-assert.equal(comfySubmission.image_base64, "data:image/png;base64,YWJj");
-assert.equal(comfySubmission.mask_base64, "data:image/png;base64,ZEZn");
-assert.match(comfyCalls.find(call => call.url.includes("/vibedraw/v1/jobs/prompt_comfy")).url, /prompt_comfy$/);
+assert.equal(cvpResult.src, "data:image/png;base64,YWJj");
+assert.equal(cvpCalls[0].headers.Authorization, "Bearer cvp-secret", "the CVP password must travel as a bearer token");
+const cvpSubmission = JSON.parse(cvpCalls.find(call => call.method === "POST").bodyText);
+assert.equal(cvpSubmission.task, "inpaint");
+assert.deepEqual(JSON.parse(JSON.stringify(cvpSubmission.size)), [512, 512]);
+assert.equal(cvpSubmission.steps, 6);
+assert.equal(cvpSubmission.ref_strength, 0.55, "the artwork slider at 80% must keep the per-task reference weight");
+assert.equal(cvpSubmission.image_base64, "data:image/png;base64,YWJj");
+assert.equal(cvpSubmission.mask_base64, "data:image/png;base64,ZEZn");
+assert.equal(cvpSubmission.grow_mask_by, 12);
+assert.equal("workflow" in cvpSubmission, false, "the plugin ships its own graphs, so no workflow is ever uploaded");
+assert.match(cvpCalls.find(call => call.url.includes("/vibedraw/v1/jobs/job_cvp")).url, /job_cvp$/);
+
+cvpCalls.length = 0;
+await context.vibedraw.services.providers.generate({
+  slot: "quick", task: "quick", protocol: "cvp", endpoint: "http://192.168.1.2:8188", apiKey: "",
+  width: 512, height: 512, steps: 8, refStrength: 0.55, timeoutMs: 30000, customHeaders: ""
+}, { prompt: "a fox", negativePrompt: "", seed: 1, strength: 1.6, imageDataUrl: "data:image/png;base64,YWJj" });
+const quickSubmission = JSON.parse(cvpCalls.find(call => call.method === "POST").bodyText);
+assert.equal(quickSubmission.task, "quick");
+assert.equal(quickSubmission.ref_strength, 0.95, "a stronger artwork setting must raise fidelity and clamp at the maximum");
+assert.equal("mask_base64" in quickSubmission, false, "quick draw never sends a mask");
+
+context.vibedraw.platform.hermit.request = async () => ({ status: 401, bodyText: JSON.stringify({ error: "unauthorized", message: "bad password" }) });
+await assert.rejects(() => context.vibedraw.services.providers.generate({
+  slot: "quick", task: "quick", protocol: "cvp", endpoint: "http://192.168.1.2:8188", apiKey: "wrong",
+  width: 512, height: 512, steps: 8, refStrength: 0.55, timeoutMs: 30000, customHeaders: ""
+}, { prompt: "a fox", negativePrompt: "", seed: 1, strength: 0.8, imageDataUrl: "data:image/png;base64,YWJj" }), /访问密码不正确/, "a wrong password must surface as a readable password error");
 
 const strongColor = internals.a1xPayload({ slot: "quick", model: "dreamshaper8_lcm_blended_img2img_sd15", width: 512, steps: 8, guidanceScale: 2 }, {
   prompt: "portrait", negativePrompt: "", seed: 9, strength: 1.2, colorStrength: 0.65

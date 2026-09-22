@@ -1,6 +1,13 @@
 (function (app) {
   "use strict";
   var t = app.i18n.text, u = app.utils, ui, draft, original, slot = "quick";
+  var SLOTS = ["quick", "inpaint", "upscale"];
+  var SLOT_TABS = [["quick", "快速生图", "Quick draw"], ["inpaint", "局部重绘", "Local redraw"], ["upscale", "高清渲染", "Render"]];
+  var SLOT_INTRO = {
+    quick: ["请使用 1 秒以内成图 512 分辨率的模型，推荐 LCM 模型。", "Use a model that finishes a 512 image within about a second. An LCM model is recommended."],
+    inpaint: ["用蒙版标出要改的地方，只重画这一块，其余保持原样；同样推荐 LCM 模型。", "Mark the area to change. Only that area is repainted and everything else is kept. An LCM model is recommended."],
+    upscale: ["把 512 的手绘稿放大并补充细节。模型只要能接受 512 参考图、输出大图即可。", "Upscale the 512 sketch and add detail. Any model that accepts a 512 reference and outputs a larger image works."]
+  };
   function init() { ui = app.components.ui; }
   function input(name, label, value, type, placeholder) {
     return '<label class="field"><span>' + label + '</span><input name="' + name + '" type="' + (type || "text") + '" value="' + u.escapeHtml(value == null ? "" : value) + '" placeholder="' + u.escapeHtml(placeholder || "") + '"></label>';
@@ -50,45 +57,59 @@
     else if (kind === "help") help();
     else about();
   }
+  function aspectField(model, name) {
+    // The aspect and step count come from the plugin's task specification, so
+    // they are shown but never edited here. Only the upscale task lets the user
+    // pick between its two supported output sizes.
+    var sizes = name === "upscale"
+      ? '<span class="aspect-sizes">' + [1024, 2048].map(function (value) {
+        return '<button type="button" data-aspect-size="' + value + '" class="' + (Number(model.width) === value ? "is-active" : "") + '">' + value + " × " + value + '</button>';
+      }).join("") + '</span>'
+      : '<strong>' + model.width + " × " + model.height + '</strong>';
+    return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>1:1</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
+  }
   function renderModels() {
-    var model = draft[slot], comfy = model.protocol === "comfyui", a1x = model.protocol === "a1x-image";
+    var model = draft[slot], protocol = model.protocol, cvp = protocol === "cvp", a1x = protocol === "a1x-image";
     var choices = app.services.providers.protocols.map(function (p) { return [p.id, p.name]; });
+    var tabs = SLOT_TABS.map(function (entry) {
+      return '<button data-slot-tab="' + entry[0] + '" class="' + (slot === entry[0] ? "is-active" : "") + '">' + t(entry[1], entry[2]) + '</button>';
+    }).join("");
+    var secretLabel = cvp ? t("访问密码", "Access password") : a1x ? t("A1X 访问密码", "A1X access password") : "API Key";
+    var secretHint = cvp
+      ? t("在 ComfyUI 的 VibeDraw 配置节点里设置；留空表示插件没有启用密码", "Set it in the ComfyUI VibeDraw config node; leave empty when the plugin has no password")
+      : t("免鉴权的本地服务可留空", "Optional for local services");
     var root = ui.open({ title: t("模型配置", "Models"), beforeClose: discard, html:
-      '<button class="button button-secondary a1x-quick-setup" data-a1x-setup><i class="fa-solid fa-microchip"></i><span><strong>' + t("配置 A1X DreamShaper 实时模型", "Set up A1X DreamShaper preview") + '</strong><small>' + t("只设置实时槽位 · 512 × 512 · 默认 4 步", "Preview slot only · 512 × 512 · 4 steps by default") + '</small></span></button>' +
-      '<div class="segmented model-tabs"><button data-slot-tab="quick" class="' + (slot === "quick" ? "is-active" : "") + '">' + t("实时快速", "Fast preview") + '</button><button data-slot-tab="quality" class="' + (slot === "quality" ? "is-active" : "") + '">' + t("高质量渲染", "Render") + '</button></div>' +
-      '<div data-model-card="' + slot + '"><p class="model-intro">' + (slot === "quick" ? t("落笔后生成预览。选择快速、低步数模型。", "For previews after drawing. Choose a fast, low-step model.") : t("以画布当前实际显示效果为参考，生成并预览真实的 1024 × 1024 大图。", "Render a true 1024 × 1024 image from the canvas exactly as currently displayed.")) + '</p>' +
-      '<div class="field-row">' + select("protocol", t("接口模式", "API format"), model.protocol, choices) + (slot === "quality" ? '<div class="field locked-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><strong>' + t("当前画布 · 提示词可选 · 1:1", "Visible canvas · optional prompt · 1:1") + '</strong></div>' : (a1x ? '<div class="field locked-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><strong>' + t("草图 · 提示词可选 · 1:1", "Sketch · optional prompt · 1:1") + '</strong></div>' : select("inputMode", t("输入方式", "Input"), model.inputMode, [["sketch", t("草图 + 描述", "Sketch + prompt")], ["text", t("仅描述", "Prompt only")]]))) + '</div>' +
-      input("endpoint", t("服务地址", "Base URL"), model.endpoint, "url", "https://… / http://192.168.…") +
-      '<label class="field"><span>' + (a1x ? t("A1X 访问密码", "A1X access password") : "API Key") + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(model.apiKey) + '" placeholder="' + t("免鉴权的本地服务可留空", "Optional for local services") + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>' +
-      (comfy || a1x ? '' : input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider"))) +
-      (comfy ? textarea("workflow", t("ComfyUI VibeDraw 工作流", "ComfyUI VibeDraw workflow"), model.workflow, "导出包含 VibeDraw Input / Output 节点的 API workflow JSON") : '') +
-      (a1x ? '<div class="a1x-profile"><div><i class="fa-solid fa-microchip"></i><span><strong>' + (slot === "quick" ? "DreamShaper8 LCM " + t("单路混合重绘", "single-path redraw") : "Flux.2 Klein 4B") + '</strong><small>' + (slot === "quick" ? t("原稿叠加轻微模糊后直接进行 img2img；不使用轮廓或颜色双通道", "Direct img2img from the canvas mixed with a mild blur; no separate structure or color channels") : t("固定 1024 × 1024、1:1 与 1.0 MP 参考图编码；2 / 4 步使用 Distilled，8 步使用 Base", "Fixed at 1024 × 1024, 1:1 and 1.0 MP reference encoding; 2 / 4 steps use Distilled and 8 steps use Base")) + '</small></span></div><div class="field-row"><div class="field locked-field"><span>' + t("生成尺寸", "Output size") + '</span><strong>' + (slot === "quick" ? "512 × 512" : "1024 × 1024") + '</strong></div>' + select("steps", t("采样步数", "Sampling steps"), Number(model.steps), [[2, "2"], [4, "4"], [8, "8"]]) + '</div></div>' : '') +
-      '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + (a1x ? '' : (slot === "quality" ? '<div class="field locked-field"><span>' + t("渲染尺寸", "Render size") + '</span><strong>1024 × 1024</strong></div>' : input("width", t("宽度", "Width"), model.width, "number") + input("height", t("高度", "Height"), model.height, "number")) + input("steps", t("步数", "Steps"), model.steps, "number")) + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + '</div>' +
-      (model.protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
+      '<div class="segmented model-tabs">' + tabs + '</div>' +
+      '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
+      select("protocol", t("接口模式", "API format"), protocol, choices) +
+      aspectField(model, slot) +
+      input("endpoint", t("服务器地址", "Server address"), model.endpoint, "url", cvp || a1x ? "http://192.168.1.2:8188" : "https://…") +
+      '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>' +
+      (!cvp && !a1x ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
+      (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的三套工作流决定；点下方按钮可以直接读取插件当前的模型与能力。", "Aspect, steps and reference weight come from the plugin's three built-in workflows. The button below reads the plugin's current model and capabilities.") + '</p>' : '') +
+      '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + (cvp ? input("refStrength", t("参考图权重基准", "Reference weight"), model.refStrength, "number") : '') + '</div>' +
+      (cvp ? '<div class="field-row">' + input("growMaskBy", t("蒙版外扩（像素）", "Mask grow (px)"), model.growMaskBy, "number") + '</div>' : '') +
+      (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
       textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
-      '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；API Key 仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Keys are stored locally when you save.") + '</p>' +
+      '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
       '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p></div>' + footer() });
     bindChoices(root);
-    root.querySelector("[data-a1x-setup]").onclick = async function () {
-      var hasExisting = Boolean(draft.quick.endpoint || draft.quick.apiKey || draft.quick.workflow);
-      if (hasExisting) {
-        var confirmed = await ui.confirm({ title: t("配置 DreamShaper 实时模型？", "Set up DreamShaper preview?"), message: t("只替换实时快速槽位，不会修改高质量模型，也不会立即保存。", "Only the preview slot is replaced. The quality model is unchanged, and nothing is saved yet."), ok: t("应用配置", "Apply preset") });
-        if (!confirmed) return;
-      }
-      draft.quick = app.services.providers.preset("a1x-image", "quick");
-      slot = "quick"; renderModels();
-    };
     root.querySelectorAll("[data-slot-tab]").forEach(function (button) { button.onclick = function () { slot = button.dataset.slotTab; renderModels(); }; });
+    root.querySelectorAll("[data-aspect-size]").forEach(function (button) {
+      button.onclick = function () {
+        var value = Number(button.dataset.aspectSize);
+        draft[slot].width = value; draft[slot].height = value; renderModels();
+      };
+    });
     root.querySelectorAll("[name]").forEach(function (field) {
+      var numeric = ["width", "height", "steps", "timeoutMs", "refStrength", "growMaskBy"].indexOf(field.name) >= 0;
       function update() {
-        draft[slot][field.name] = ["width", "height", "steps", "timeoutMs"].indexOf(field.name) >= 0 ? Number(field.value) : field.value;
-        if (a1x && field.name === "width") draft[slot].height = Number(field.value);
-        if (a1x && field.name === "steps") draft[slot].model = slot === "quick" ? "dreamshaper8_lcm_blended_img2img_sd15" : (Number(field.value) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4");
+        draft[slot][field.name] = field.name === "apiKey" || field.name === "customHeaders" ? field.value : numeric ? Number(field.value) : field.value;
       }
       if (field.name === "protocol") field.onchange = async function () {
         var previous = model.protocol, protocol = field.value;
-        if (model.endpoint || model.apiKey || model.workflow) {
-          var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("当前槽位的地址、密钥和接口参数会重置；另一个模型不受影响。", "This slot's URL, key and API options will reset. The other model stays unchanged."), ok: t("切换", "Change") });
+        if (model.endpoint || model.apiKey) {
+          var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("当前任务的地址与密码会重置；其他任务不受影响。", "This task's address and password will reset. Other tasks stay unchanged."), ok: t("切换", "Change") });
           if (!confirmed) { field.value = previous; syncChoice(field); return; }
         }
         draft[slot] = app.services.providers.preset(protocol, slot); renderModels();
@@ -105,20 +126,32 @@
       key.dispatchEvent(new Event("input", { bubbles: true }));
     });
     root.querySelector("[data-test]").onclick = ui.action(async function () {
-      var status = root.querySelector("[data-test-status]"); status.textContent = t("连接中，不生成图片…", "Connecting without generating an image…");
-      try { await app.services.providers.test(draft[slot]); status.textContent = a1x ? (slot === "quick" ? t("连接成功；DreamShaper8 LCM 的 2 / 4 / 8 步能力可用。", "Connected. DreamShaper8 LCM is available at 2 / 4 / 8 steps.") : t("连接成功；Flux.2 Klein 4B 的 2 / 4 / 8 步能力可用。", "Connected. Flux.2 Klein 4B is available at 2 / 4 / 8 steps.")) : t("连接成功；出图能力取决于所选模型。", "Connected. Image support depends on the selected model."); }
-      catch (error) { status.textContent = t("连接失败，请检查地址与密钥。", "Connection failed. Check your URL and key."); throw error; }
+      var status = root.querySelector("[data-test-status]");
+      status.textContent = t("连接中，不生成图片…", "Connecting without generating an image…");
+      try {
+        var result = await app.services.providers.test(draft[slot]);
+        if (result && result.task) status.textContent = t("连接成功；插件当前使用 " + result.model + "。", "Connected. The plugin is using " + result.model + ".");
+        else status.textContent = t("连接成功；出图能力取决于所选模型。", "Connected. Image support depends on the selected model.");
+      } catch (error) {
+        status.textContent = t("连接失败，请检查地址与密码。", "Connection failed. Check your URL and password.");
+        throw error;
+      }
     });
     root.querySelector("[data-cancel]").onclick = ui.requestClose;
     root.querySelector("[data-save]").onclick = ui.action(async function () {
-      ["quick", "quality"].forEach(function (name) {
+      SLOTS.forEach(function (name) {
         var config = draft[name];
-        if (!config.endpoint.trim()) return;
+        if (!config) return;
+        if (!String(config.endpoint || "").trim()) return;
         u.validateEndpoint(config.endpoint); u.parseHeaders(config.customHeaders);
-        if (name === "quality") { config.width = config.height = 1024; config.inputMode = "sketch"; }
-        if (config.protocol === "a1x-image" && (Number(config.width) !== (name === "quick" ? 512 : 1024) || Number(config.height) !== (name === "quick" ? 512 : 1024) || [2, 4, 8].indexOf(Number(config.steps)) < 0)) throw new Error(t("A1X 图片模型要求实时 512 × 512、渲染 1024 × 1024，并支持 2 / 4 / 8 步", "A1X image models require 512 × 512 previews, 1024 × 1024 renders, and 2 / 4 / 8 steps"));
-        if (config.protocol === "a1x-image") { config.width = config.height = name === "quick" ? 512 : 1024; config.guidanceScale = name === "quick" ? 2 : 1; config.model = name === "quick" ? "dreamshaper8_lcm_blended_img2img_sd15" : (Number(config.steps) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4"); }
-        if (!(config.width >= 256 && config.width <= 2048 && config.height >= 256 && config.height <= 2048 && config.steps >= 1 && config.steps <= 150 && config.timeoutMs >= 5000 && config.timeoutMs <= 300000)) throw new Error(t("尺寸需为 256–2048，步数为 1–150，超时为 5–300 秒", "Use dimensions 256–2048, steps 1–150, and timeout 5–300 seconds"));
+        if (config.protocol === "a1x-image") {
+          var wanted = name === "upscale" ? 1024 : 512;
+          if (Number(config.width) !== wanted || Number(config.height) !== wanted || [2, 4, 8].indexOf(Number(config.steps)) < 0) throw new Error(t("A1X 图片模型要求实时 512 × 512、渲染 1024 × 1024，并支持 2 / 4 / 8 步", "A1X image models require 512 × 512 previews, 1024 × 1024 renders, and 2 / 4 / 8 steps"));
+          config.guidanceScale = name === "upscale" ? 1 : 2;
+          config.model = name === "upscale" ? (Number(config.steps) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4") : "dreamshaper8_lcm_blended_img2img_sd15";
+        }
+        if (!(Number(config.timeoutMs) >= 5000 && Number(config.timeoutMs) <= 300000)) throw new Error(t("超时需为 5–300 秒", "Use a timeout between 5 and 300 seconds"));
+        if (config.protocol === "cvp" && !(Number(config.refStrength) > 0 && Number(config.refStrength) <= 1)) throw new Error(t("参考图权重需为 0–1", "Reference weight must be between 0 and 1"));
       });
       await app.services.store.saveConfig(draft); ui.close(); app.events.emit("config:changed"); ui.toast(t("模型设置已保存", "Model settings saved"));
     });
@@ -262,8 +295,8 @@
       t("先在右上角菜单配置模型。自动模式会在落笔后等待片刻再生成；生成期间可以继续画，最新画面会排队。", "Configure models in the menu. Auto mode waits briefly after a stroke. Keep drawing while a request runs; the latest sketch is queued.") + '</li><li>' +
       t("叠加生成关闭时，画布上方滑竿调整顶层成图透明度；开启后成图移到元素下方，滑竿改为调整元素层透明度。绘制稿强度在作品设置中统一调整。", "With overlay generation off, the slider above the canvas controls the top result layer. Turn overlay on to move the result below the elements and use the slider for element-layer opacity. Adjust shared sketch preservation in Artwork settings.") + '</li><li>' +
       t("作品会自动保存在历史中。打开历史可继续编辑或复制作品；新建时会先保存当前作品。", "Artwork is saved automatically. Continue or duplicate it from Your artwork. Creating a new work saves the current one first.") + '</li></ol><h3>' +
-      t("局部与选择", "Mask & selection") + '</h3><p>' + t("局部工具用粉色标记重绘区域，仅支持有蒙版能力的 OpenAI Images 和 SD WebUI 接口。选择模式下，轻点元素会单选；从空白处拖出选择框，碰到的元素都会被选中。直接拖动单个元素只移动它，框选后再拖动选区内的元素或空隙会整体移动；点击成组后，轻点或框到组内任一元素都会选中整组。四角手柄与双指捏合用于等比缩放。", "The pink mask marks areas to repaint in supported OpenAI Images and SD WebUI APIs. In Select mode, tap an element to select only it, or drag a box from empty space; every touched element is selected. Drag one element to move only it; after a box selection, drag an element or empty space inside the selection to move the selection. After grouping, tapping or touching any member with the selection box selects the whole group. Use corner handles or a two-finger pinch to scale proportionally.") + '</p><h3>' +
-      t("连接自己的模型", "Connect your model") + '</h3><p>' + t("两个模型独立配置。A1X 推荐使用 DreamShaper8 LCM 做 512 × 512 实时手绘，Flux.2 Klein 4B 做 1024 × 1024 渲染；两者均为 1:1，并支持 2 / 4 / 8 步。局域网地址支持 HTTP，公网需要 HTTPS。通用 ComfyUI 模式仍可导入带占位符的 API 工作流。", "Configure two independent models. The recommended A1X setup uses DreamShaper8 LCM for 512 × 512 realtime sketching and Flux.2 Klein 4B for 1024 × 1024 rendering. Both are 1:1 and support 2 / 4 / 8 steps. LAN HTTP is supported, while public services require HTTPS. Generic ComfyUI workflows remain available.") + '</p><h3>' +
+      t("局部与选择", "Mask & selection") + '</h3><p>' +       t("局部工具用粉色标记重绘区域，可用 CVP 插件、OpenAI Images 和 SD WebUI 接口重绘。选择模式下，轻点元素会单选；从空白处拖出选择框，碰到的元素都会被选中。直接拖动单个元素只移动它，框选后再拖动选区内的元素或空隙会整体移动；点击成组后，轻点或框到组内任一元素都会选中整组。四角手柄与双指捏合用于等比缩放。", "The pink mask marks the area to repaint; the CVP plugin, OpenAI Images and SD WebUI can all use it. In Select mode, tap an element to select only it, or drag a box from empty space; every touched element is selected. Drag one element to move only it; after a box selection, drag an element or empty space inside the selection to move the selection. After grouping, tapping or touching any member with the selection box selects the whole group. Use corner handles or a two-finger pinch to scale proportionally.") + '</p><h3>' +
+      t("连接自己的模型", "Connect your model") + '</h3><p>' + t("三个任务各自独立配置：快速生图、局部重绘、高清渲染。推荐在本地 ComfyUI 上安装 VibeDraw 插件（CVP），它自带这三套工作流，并推荐使用 DreamShaper8 LCM —— 512 × 512 低步数下约一秒成图，且参考图权重可调。访问密码在插件的配置节点里设置，密码错误不会出图。局域网地址支持 HTTP，公网需要 HTTPS。", "Configure the three tasks independently: quick draw, local redraw and render. Install the VibeDraw plugin (CVP) on a local ComfyUI; it ships all three workflows, and DreamShaper8 LCM is recommended: about a second at 512 × 512 with few steps, with an adjustable reference weight. Set the access password in the plugin's config node; a wrong password produces no image. LAN HTTP is supported, public services need HTTPS.") + '</p><h3>' +
       t("保存与导出", "Save & export") + '</h3><p>' + t("下载按钮保存当前画布的实际显示效果；渲染完成后会打开全屏大图预览，可双指缩放、拖动查看并单独下载 1024 大图。停止等待只忽略本次结果，不保证服务端取消或停止计费。", "Download saves the canvas exactly as displayed. Render opens a fullscreen image viewer with pinch zoom, panning, and a separate 1024 image download. Dismiss ignores a result; it does not guarantee server cancellation or stop billing.") + '</p></div>' });
   }
   function about() {

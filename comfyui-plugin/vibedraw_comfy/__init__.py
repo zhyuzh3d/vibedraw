@@ -1,13 +1,25 @@
-"""VibeDraw integration for ComfyUI.
+"""VibeDraw ComfyUI plugin.
 
-The package deliberately keeps the transport contract separate from the
-workflow graph.  A VibeDrawInput node is patched by the HTTP adapter before
-the graph is queued; VibeDrawOutput is a normal ComfyUI image output node.
+Drop this folder into ``ComfyUI/custom_nodes/`` and restart ComfyUI.  Then:
+
+1. Open the **VibeDraw 配置 (Config)** node, set the password you want your
+   drawing app to send, pick the checkpoints for the three tasks, and Queue
+   once.  Leaving the password empty turns authentication off.
+2. Point the client at this machine's address; it discovers the rest through
+   ``GET /vibedraw/v1/capabilities``.
+
+The plugin ships its own graphs for quick draw, local redraw and upscale, so no
+API workflow export is ever needed.
 """
 
+from __future__ import annotations
+
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
-from . import server as _server  # noqa: F401 - registers HTTP routes on import
+from . import server as server_module
 
-WEB_DIRECTORY = None
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+ROUTES_REGISTERED = server_module.register_routes()
+
+if not ROUTES_REGISTERED:
+    print("[VibeDraw] HTTP 路由未注册：ComfyUI 服务实例还不可用，vibedraw 客户端将无法连接。")

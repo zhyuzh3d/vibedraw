@@ -5,12 +5,16 @@
   var network = app.platform.hermit;
   var t = app.i18n && app.i18n.text || function (zh) { return zh; };
   var PROTOCOLS = [
-    { id: "a1x-image", name: "A1X 图片任务", description: "DreamShaper8 LCM 实时槽位固定 512；Flux.2 渲染槽位固定 1024，均为 1:1。" },
+    { id: "cvp", name: "CVP 插件（推荐）", description: "连接装有 VibeDraw 插件的 ComfyUI。插件自带快速生图 / 局部重绘 / 放大绘制三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。" },
+    { id: "a1x-image", name: "A1X 设备原生接口", description: "兼容 A1X 掌机自带的图片任务接口，适合还没装 VibeDraw 插件的存量设备。" },
     { id: "openai-images", name: "OpenAI Images 兼容", description: "兼容 /v1/images/generations 与 /v1/images/edits，适合云端与兼容网关。" },
     { id: "sd-webui", name: "SD WebUI / Forge", description: "兼容 /sdapi/v1/img2img，适合局域网 Stable Diffusion WebUI 或 Forge。" },
-    { id: "comfyui", name: "ComfyUI VibeDraw 插件", description: "通过 VibeDraw Input / Output 节点接入任意 ComfyUI 工作流。" },
     { id: "stability", name: "Stability AI", description: "兼容 Stable Image v2beta 的 Control Sketch 与 Generate 接口。" }
   ];
+
+  //: Slot -> CVP task. The plugin owns the three built-in graphs, so the client
+  //: only has to name the task and hand over the canvas.
+  var CVP_TASKS = { quick: "quick", inpaint: "inpaint", upscale: "upscale" };
 
   function headers(config, contentType) {
     var output = u.parseHeaders(config.customHeaders || "");
@@ -266,49 +270,100 @@
     return result;
   }
 
-  function comfyRoot(endpoint) { return u.stripSlash(endpoint).replace(/\/(?:prompt|system_stats)$/i, ""); }
-  async function comfyGenerate(config, input) {
-    var template = u.parseJson(config.workflow || "", null);
-    if (!template || Object.prototype.toString.call(template) !== "[object Object]") throw new Error("ComfyUI 需要粘贴有效的 API workflow JSON");
-    var root = comfyRoot(config.endpoint), requestHeaders = headers(config, "application/json"), clientId = u.id("vibedraw");
+  // --------------------------------------------------------------------- //
+  // CVP — the ComfyUI VibeDraw plugin (schema vibedraw-comfy/v2)
+  //
+  // One endpoint, three tasks. The plugin ships its own graphs, so the client
+  // sends a task name plus the canvas and never an API workflow. The plugin
+  // also serves the finished image itself, which keeps a single password for
+  // both submitting and downloading.
+  // --------------------------------------------------------------------- //
+
+  function cvpBase(endpoint) {
+    var value = u.stripSlash(endpoint), marker = value.indexOf("/vibedraw/");
+    return marker >= 0 ? value.slice(0, marker) : value;
+  }
+  function cvpTask(config) { return CVP_TASKS[config && (config.task || config.slot)] || "quick"; }
+  function cvpError(error) {
+    var text = String(error && error.message || error || "");
+    if (/unauthorized|401/.test(text)) return new Error(t("访问密码不正确，请在 ComfyUI 的 VibeDraw 配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI VibeDraw config node."));
+    if (/no_model|模型/.test(text)) return new Error(t("插件没有可用模型，请先在 ComfyUI 的 VibeDraw 配置节点里选择 checkpoint", "The plugin has no model. Pick a checkpoint in the ComfyUI VibeDraw config node first."));
+    if (/busy|429/.test(text)) return new Error(t("插件队列已满，请稍后再试", "The plugin queue is full. Try again shortly."));
+    return error;
+  }
+  function cvpStrength(config, strength) {
+    // The artwork slider runs 0–100% with 80% as the neutral point, so the
+    // per-slot reference weight stays the default while the slider still lets
+    // the user trade fidelity for freedom.
+    var value = Number(strength), base = Number(config && config.refStrength);
+    if (!Number.isFinite(value) || value <= 0) value = 0.8;
+    if (!Number.isFinite(base) || base <= 0) base = 0.55;
+    return u.clamp(base * (value / 0.8), 0.05, 0.95);
+  }
+  async function cvpGenerate(config, input) {
+    var base = cvpBase(config.endpoint), api = base + "/vibedraw/v1", task = cvpTask(config);
+    var requestHeaders = headers(config, "application/json");
     var body = {
-      workflow: template,
-      inputs: {
-        prompt: input.prompt,
-        negative_prompt: input.negativePrompt,
-        seed: Number(input.seed) >= 0 ? Number(input.seed) : Math.floor(Math.random() * 2147483647),
-        ref_strength: u.clamp(Number(input.strength), 0, 2),
-        steps: Number(config.steps) || 20,
-        width: Number(config.width) || 768,
-        height: Number(config.height) || 768
-      },
-      client_id: clientId
+      task: task,
+      prompt: input.prompt,
+      negative_prompt: input.negativePrompt,
+      seed: Number(input.seed) >= 0 ? Number(input.seed) : Math.floor(Math.random() * 9007199254740991),
+      size: [Number(config.width) || 512, Number(config.height) || 512],
+      steps: Number(config.steps) || 8,
+      ref_strength: cvpStrength(config, input.strength)
     };
-    if (config.inputMode !== "text" && input.imageDataUrl) body.image_base64 = input.imageDataUrl;
-    if (input.maskDataUrl) body.mask_base64 = input.maskDataUrl;
-    var queued = await network.requestJson({ url: root + "/vibedraw/v1/jobs", method: "POST", headers: requestHeaders, bodyText: JSON.stringify(body), timeoutMs: config.timeoutMs });
-    var queuedData = queued.data || {}, promptId = queuedData.job_id;
-    if (!promptId) throw new Error("ComfyUI VibeDraw 插件未返回任务 ID，请确认已安装插件并包含 VibeDraw Input / Output 节点");
-    var deadline = Date.now() + (Number(config.timeoutMs) || 180000), output = null;
-    while (Date.now() < deadline) {
-      await u.sleep(800);
-      var detailResponse = await network.requestJson({ url: root + "/vibedraw/v1/jobs/" + encodeURIComponent(promptId), method: "GET", headers: headers(config), timeoutMs: 15000 });
-      var detail = detailResponse.data || {};
-      if (detail.state === "failed") throw new Error("ComfyUI VibeDraw 工作流执行失败");
-      output = detail.outputs && detail.outputs[0];
-      if (output) break;
+    if (input.imageDataUrl) body.image_base64 = input.imageDataUrl;
+    if (task === "inpaint") {
+      if (!input.maskDataUrl) throw new Error(t("局部重绘缺少蒙版，请先用局部工具标记要改的区域", "Local redraw needs a mask. Mark the area with the mask tool first."));
+      body.mask_base64 = input.maskDataUrl;
+      body.grow_mask_by = u.clamp(Number(config.growMaskBy) || 8, 0, 64);
     }
-    if (!output) throw new Error("ComfyUI 生成超时，任务可能仍在服务端队列中");
-    var url = root + "/view?filename=" + encodeURIComponent(output.filename) + "&subfolder=" + encodeURIComponent(output.subfolder || "") + "&type=" + encodeURIComponent(output.type || "output");
-    return responseImage(await network.request({ url: url, method: "GET", headers: headers(config), timeoutMs: 60000 }), headers(config));
+    var label = task === "inpaint" ? t("局部重绘", "Local redraw") : task === "upscale" ? t("放大绘制", "Upscale") : t("快速生图", "Quick draw");
+    app.events.emit("generation:progress", t("正在提交" + label + "任务…", "Submitting the " + label + " job…"));
+    var submitted;
+    try {
+      submitted = await network.request({ url: api + "/jobs", method: "POST", headers: requestHeaders, bodyText: JSON.stringify(body), timeoutMs: config.timeoutMs });
+      ensureOk(submitted, requestHeaders);
+    } catch (error) { throw cvpError(error); }
+    var accepted = u.parseJson(submitted.bodyText || "", null), jobId = accepted && accepted.job && accepted.job.id;
+    if (!jobId) throw new Error(t("CVP 插件未返回任务 ID，请确认插件版本与地址", "The CVP plugin did not return a job id. Check the plugin version and address."));
+    var deadline = Date.now() + (Number(config.timeoutMs) || 120000), detail = null;
+    while (Date.now() < deadline) {
+      await u.sleep(700);
+      var polled;
+      try {
+        polled = await network.request({ url: api + "/jobs/" + encodeURIComponent(jobId), method: "GET", headers: headers(config), timeoutMs: 15000 });
+        ensureOk(polled, headers(config));
+      } catch (error) { throw cvpError(error); }
+      var payload = u.parseJson(polled.bodyText || "", null);
+      detail = payload && payload.job;
+      if (!detail) continue;
+      if (detail.state === "failed") throw new Error(t("CVP 工作流执行失败：", "CVP workflow failed: ") + String(detail.error || "unknown"));
+      if (detail.state === "cancelled") throw new Error(t("CVP 任务已取消", "The CVP job was cancelled"));
+      if (detail.state === "completed") break;
+      if (detail.progress) app.events.emit("generation:progress", t(label + "进行中…", label + " in progress…"));
+    }
+    if (!detail || detail.state !== "completed") throw new Error(t("CVP 生成超时，任务可能仍在服务端队列中", "CVP timed out; the job may still be queued on the server"));
+    var output = detail.outputs && detail.outputs[0];
+    if (!output || !output.url) throw new Error(t("CVP 任务完成，但没有图片输出", "The CVP job finished without an image"));
+    var imageUrl = /^https?:/i.test(output.url) ? output.url : base + output.url;
+    app.events.emit("generation:progress", t("正在读取生成图片…", "Loading the generated image…"));
+    var downloaded;
+    try {
+      downloaded = await network.request({ url: imageUrl, method: "GET", headers: headers(config), timeoutMs: 60000 });
+      ensureOk(downloaded, headers(config));
+    } catch (error) { throw cvpError(error); }
+    var result = await responseImage(downloaded, headers(config));
+    result.metadata = detail;
+    return result;
   }
 
   async function generate(config, input) {
     validate(config);
+    if (config.protocol === "cvp") return cvpGenerate(config, input);
     if (config.protocol === "a1x-image") return a1xGenerate(config, input);
     if (config.protocol === "openai-images") return openAiGenerate(config, input);
     if (config.protocol === "sd-webui") return sdWebuiGenerate(config, input);
-    if (config.protocol === "comfyui") return comfyGenerate(config, input);
     if (config.protocol === "stability") return stabilityGenerate(config, input);
     throw new Error("不支持的图像接口协议：" + config.protocol);
   }
@@ -319,7 +374,7 @@
     var a1xSize = config && config.slot === "quality" ? 1024 : 512;
     if (config.protocol === "a1x-image" && (Number(config.width) !== a1xSize || Number(config.height) !== a1xSize || [2, 4, 8].indexOf(Number(config.steps)) < 0)) throw new Error("A1X 图片模型要求实时 512 × 512、渲染 1024 × 1024，并支持 2 / 4 / 8 步");
     if (config.protocol === "openai-images" && !config.model) throw new Error("请填写图像模型 ID");
-    if (config.protocol === "comfyui" && !u.parseJson(config.workflow || "", null)) throw new Error("请先粘贴包含 VibeDraw Input / Output 节点的 ComfyUI API workflow JSON");
+    if (config.protocol === "cvp" && !(Number(config.width) >= 256 && Number(config.width) <= 2048 && Number(config.height) >= 256 && Number(config.height) <= 2048)) throw new Error(app.i18n ? app.i18n.text("画幅需为 256–2048", "Use a canvas size between 256 and 2048") : "画幅需为 256–2048");
     u.parseHeaders(config.customHeaders || "");
   }
   async function test(config) {
@@ -354,45 +409,67 @@
     }
     if (config.protocol === "openai-images") { root = openAiRoot(config.endpoint); url = root + "/models"; }
     else if (config.protocol === "sd-webui") url = u.stripSlash(config.endpoint) + "/sdapi/v1/sd-models";
-    else if (config.protocol === "comfyui") url = comfyRoot(config.endpoint) + "/vibedraw/v1/capabilities";
+    else if (config.protocol === "cvp") url = cvpBase(config.endpoint) + "/vibedraw/v1/capabilities";
     else {
       var parsed = new URL(stabilityEndpoint(config));
       url = parsed.origin + "/v1/user/account";
     }
     var requestHeaders = headers(config), response = await network.request({ url: url, method: "GET", headers: requestHeaders, timeoutMs: Math.min(Number(config.timeoutMs) || 30000, 30000) });
     ensureOk(response, requestHeaders);
+    if (config.protocol === "cvp") {
+      var capabilities = u.parseJson(response.bodyText || "", null), tasks = capabilities && capabilities.tasks || [], wanted = cvpTask(config);
+      var found = tasks.filter(function (item) { return item && item.id === wanted; })[0];
+      if (!found) throw new Error(t("CVP 插件不支持“" + wanted + "”任务，请升级插件", "The CVP plugin does not offer the " + wanted + " task. Please update it."));
+      if (!found.model) throw new Error(t("插件的" + wanted + "任务还没有选择模型，请在 ComfyUI 的 VibeDraw 配置节点里设置", "The plugin has no model for " + wanted + ". Set it in the ComfyUI VibeDraw config node."));
+      return { ok: true, status: response.status, task: wanted, model: found.model, sizes: found.sizes || [], steps: found.steps || {}, authRequired: Boolean(capabilities.auth && capabilities.auth.required) };
+    }
     return { ok: true, status: response.status };
   }
   function preset(protocol, slot) {
-    var value = u.copy(app.defaults[slot]);
+    var name = slot === "quality" ? "upscale" : (app.defaults[slot] ? slot : "quick");
+    var value = u.copy(app.defaults[name]), rendered = name === "upscale";
+    value.slot = name;
+    value.task = name;
     value.protocol = protocol;
     value.apiKey = "";
     value.customHeaders = "";
     value.workflow = "";
-    if (protocol === "a1x-image") {
-      value.endpoint = "http://192.168.124.31:8188";
-      value.model = slot === "quick" ? "dreamshaper8_lcm_blended_img2img_sd15" : "flux2_klein_4b_base_nvfp4";
+    if (protocol === "cvp") {
+      value.endpoint = "http://192.168.1.2:8188";
+      value.model = "";
       value.inputMode = "sketch";
-      value.width = value.height = slot === "quick" ? 512 : 1024;
-      value.steps = slot === "quick" ? 4 : 8;
-      value.guidanceScale = slot === "quick" ? 2 : 1;
-      value.timeoutMs = slot === "quick" ? 90000 : 180000;
+      value.width = value.height = rendered ? 1024 : 512;
+      value.steps = name === "inpaint" ? 6 : 8;
+      value.refStrength = name === "inpaint" ? 0.3 : rendered ? 0.75 : 0.55;
+      value.growMaskBy = 8;
+      value.timeoutMs = rendered ? 240000 : 60000;
+    } else if (protocol === "a1x-image") {
+      value.endpoint = "http://192.168.124.31:8188";
+      value.model = rendered ? "flux2_klein_4b_base_nvfp4" : "dreamshaper8_lcm_blended_img2img_sd15";
+      value.inputMode = "sketch";
+      value.width = value.height = rendered ? 1024 : 512;
+      value.steps = rendered ? 8 : 4;
+      value.guidanceScale = rendered ? 1 : 2;
+      value.timeoutMs = rendered ? 180000 : 90000;
     } else if (protocol === "openai-images") {
       value.endpoint = "https://api.openai.com/v1";
       value.model = "gpt-image-1";
       value.inputMode = "sketch";
+      value.width = value.height = rendered ? 1024 : 512;
+      value.quality = rendered ? "high" : "low";
+      value.timeoutMs = rendered ? 180000 : 60000;
     } else if (protocol === "sd-webui") {
       value.endpoint = "http://192.168.1.2:7860";
       value.model = "";
       value.inputMode = "sketch";
-    } else if (protocol === "comfyui") {
-      value.endpoint = "http://192.168.1.2:8188";
-      value.model = "由 workflow 决定";
-      value.inputMode = "sketch";
+      value.width = value.height = rendered ? 1024 : 512;
+      value.steps = rendered ? 28 : 6;
+      value.timeoutMs = rendered ? 180000 : 60000;
     } else if (protocol === "stability") {
-      value.endpoint = slot === "quick" ? "https://api.stability.ai/v2beta/stable-image/control/sketch" : "https://api.stability.ai/v2beta/stable-image/generate/ultra";
+      value.endpoint = rendered ? "https://api.stability.ai/v2beta/stable-image/generate/ultra" : "https://api.stability.ai/v2beta/stable-image/control/sketch";
       value.model = "";
-      value.inputMode = slot === "quick" ? "sketch" : "text";
+      value.inputMode = rendered ? "text" : "sketch";
+      value.width = value.height = rendered ? 1024 : 1024;
     }
     return value;
   }
@@ -405,7 +482,9 @@
     preset: preset,
     internals: {
       openAiRoot: openAiRoot,
-      comfyRoot: comfyRoot,
+      cvpBase: cvpBase,
+      cvpTask: cvpTask,
+      cvpStrength: cvpStrength,
       a1xRoot: a1xRoot,
       a1xPayload: a1xPayload,
       a1xRetry: a1xRetry,

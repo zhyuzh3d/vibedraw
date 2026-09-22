@@ -34,19 +34,28 @@ load("app/services/store.js");
 const store = app.services.store;
 const legacyConfig = copy(app.defaults);
 legacyConfig.schema = 1;
+delete legacyConfig.inpaint;
+delete legacyConfig.upscale;
+legacyConfig.quality = {
+  slot: "quality", name: "高质量模型", protocol: "a1x-flux", endpoint: "http://192.168.124.31:8188",
+  apiKey: "kept-secret", model: "flux2_klein_4b_distilled_nvfp4", inputMode: "sketch", width: 512, height: 512,
+  steps: 4, quality: "high", timeoutMs: 180000, customHeaders: "", workflow: "", guidanceScale: 1
+};
 Object.assign(legacyConfig.quick, { protocol: "a1x-flux", endpoint: "http://192.168.124.31:8188", apiKey: "kept-secret", width: 256, height: 256, steps: 1, model: "flux2_klein_4b_distilled_nvfp4" });
-Object.assign(legacyConfig.quality, { protocol: "a1x-flux", endpoint: "http://192.168.124.31:8188", apiKey: "kept-secret", width: 512, height: 512, steps: 4, model: "flux2_klein_4b_distilled_nvfp4" });
 records.set("config", { value: legacyConfig, revision: "seed-config" });
 await store.loadConfig();
-assert.equal(app.config.schema, 6);
+assert.equal(app.config.schema, 7);
 assert.equal(app.config.quick.protocol, "a1x-image");
 assert.equal(app.config.quick.width, 512);
 assert.equal(app.config.quick.steps, 4);
 assert.equal(app.config.quick.model, "dreamshaper8_lcm_blended_img2img_sd15");
 assert.equal(app.config.quick.guidanceScale, 2);
 assert.equal(app.config.canvas.resultBrightness, 100, "global color defaults must be migrated into config");
-assert.equal(app.config.quality.steps, 8);
-assert.equal(app.config.quality.model, "flux2_klein_4b_base_nvfp4");
+assert.equal(app.config.upscale.steps, 8);
+assert.equal(app.config.upscale.model, "flux2_klein_4b_base_nvfp4");
+assert.equal(app.config.upscale.endpoint, "http://192.168.124.31:8188", "the retired quality slot must become the upscale task with its connection intact");
+assert.equal(app.config.inpaint.endpoint, "http://192.168.124.31:8188", "local redraw must inherit the quick connection on migration");
+assert.equal(Object.prototype.hasOwnProperty.call(app.config, "quality"), false, "the retired quality slot must not survive migration");
 assert.equal(Object.prototype.hasOwnProperty.call(app.config.canvas, "overlayGenerate"), false, "overlay generation is an artwork setting and must not become a global default");
 assert.equal(app.config.quick.apiKey, "kept-secret", "A1X migration must preserve the saved credential");
 Object.assign(app.state, {
@@ -160,13 +169,13 @@ await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(pending.length, 1, "cancel must release the internal running lock even if the detached request has not settled");
 pending.shift()({ src: "after-cancel" }); await afterCancel;
 assert.equal(events.length, 2, "a new request after cancel must be able to complete normally");
-Object.assign(app.config.quality, { endpoint: "https://images.example.test/v1", protocol: "openai-images", model: "quality-model", inputMode: "text", width: 512, height: 512 });
-const render = app.services.imageEngine.run("quality", false);
+Object.assign(app.config.upscale, { endpoint: "https://images.example.test/v1", protocol: "openai-images", model: "quality-model", inputMode: "text", width: 1024, height: 1024 });
+const render = app.services.imageEngine.run("upscale", false);
 await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(composeMethod, "visible", "Render must submit the current visible canvas rather than the generation-mode composition");
 assert.deepEqual(JSON.parse(JSON.stringify(visibleComposeOptions)), { size: 1024, mime: "image/png" });
 assert.equal(generationConfigs.at(-1).width, 1024); assert.equal(generationConfigs.at(-1).height, 1024); assert.equal(generationConfigs.at(-1).inputMode, "sketch");
 assert.equal(inputs.at(-1).maskDataUrl, null); assert.equal(inputs.at(-1).openAiMaskDataUrl, null);
 pending.shift()({ src: "render-1024" }); await render;
-assert.equal(events.at(-1).slot, "quality", "a validated render must be delivered as the quality result");
+assert.equal(events.at(-1).slot, "upscale", "a validated render must be delivered as the upscale result");
 console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue)");

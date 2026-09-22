@@ -135,6 +135,13 @@
     type = String(type || fallback || "image/png").split(";")[0].trim();
     return /^image\//.test(type) ? type : "image/png";
   }
+  function composePrompt(globalPrompt, localPrompt) {
+    var global = String(globalPrompt == null ? "" : globalPrompt).trim().replace(/[,\s]+$/, "");
+    var local = String(localPrompt == null ? "" : localPrompt).trim().replace(/^[,\s]+/, "");
+    if (!local) return global;
+    if (!global) return local;
+    return global + ", " + local;
+  }
 
   app.utils = {
     clamp: clamp,
@@ -158,6 +165,7 @@
     dataUrlParts: dataUrlParts,
     dataUrlByteLength: dataUrlByteLength,
     multipart: multipart,
+    composePrompt: composePrompt,
     imageMimeFromHeaders: imageMimeFromHeaders
   };
 })(window.vibedraw);

@@ -53,19 +53,33 @@ tools/performance-benchmark.mjs  可重复的克隆与存储分块基准
 docs/performance.md        HermitApp 性能设计与诊断不变量
 ```
 
-## ComfyUI VibeDraw workflow
+## ComfyUI VibeDraw plugin (CVP)
 
-安装 `comfyui-plugin/`（或发布的 `release/vibedraw-comfyui-plugin-v1.0.0.zip`）后，在 ComfyUI 工作流中放置一个 `VibeDraw Input` 和一个 `VibeDraw Output` 节点。Input 输出 `prompt`、`negative_prompt`、参考图、蒙版、`seed`、`ref_strength`、`steps`、`width` 和 `height`；用户把它们接到自己的文本编码、采样、重绘或 ControlNet 节点。最终图片接到 `VibeDraw Output`。
+`comfyui-plugin/vibedraw_comfy/` 是 VibeDraw 的**统一本地接口**：把它拷进 ComfyUI 的 `custom_nodes/` 并重启，插件自带**快速绘制 / 局部重绘 / 放大绘制**三套工作流，客户端**不需要导出任何工作流 JSON**，只报任务名和当前画布。
 
-插件包用 `python3 tools/package-plugin.py` 生成（`--check` 只校验不写入），产物是确定性 zip：固定时间戳、固定条目顺序，解压到 ComfyUI 的 `custom_nodes/` 即可使用。官网「应用广场 / VibeDraw 安装」卡片里的 **下载 ComfyUI 插件** 按钮直接指向这个 zip：
+用户在 ComfyUI 里只需要操作一个节点 **VibeDraw 配置 (Config)**：设置**访问密码**、挑选三套 checkpoint（默认推荐 DreamShaper8 LCM，512 分辨率约 1 秒出图）。密码错误时请求在**入队之前**就被拒（`401`），不会生图；密码留空则不校验。
+
+接口（`vibedraw-comfy/v2`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/vibedraw/v1/capabilities` | 能力自描述：三个任务的画幅、步数、参数、当前模型、是否需要密码 |
+| `POST` | `/vibedraw/v1/jobs` | 提交任务 → 202，body 含 `task` / `prompt` / `size` / `steps` / `ref_strength` / `image_base64`（`inpaint` 另带 `mask_base64`、`grow_mask_by`） |
+| `GET` | `/vibedraw/v1/jobs/{id}` | 轮询 `state`（`queued`/`running`/`completed`/`failed`/`cancelled`）与 `progress` |
+| `GET` | `/vibedraw/v1/jobs/{id}/output/{n}` | 取成图，**复用同一把密码**（不再借道 ComfyUI `/view`） |
+| `POST` | `/vibedraw/v1/jobs/{id}/cancel` | 取消排队任务 |
+
+**`ref_strength` 是唯一的参考图权重入口**（越高越贴近原稿），插件内部换算为 `denoise = clamp(1 - ref_strength, 0.05, 1.0)`，两端都不会出现"参数无效"的假区间。
+
+插件包用 `python3 tools/package-plugin.py` 生成（`--check` 只校验不写入），产物是确定性 zip：固定时间戳、固定条目顺序，解压到 ComfyUI 的 `custom_nodes/` 即可使用。官网「应用广场 / VibeDraw 安装」卡片里的 **下载 ComfyUI 插件** 按钮指向：
 
 ```
-https://hermit.airen.life/downloads/vibedraw/vibedraw-comfyui-plugin-v1.0.0.zip
+https://hermit.airen.life/downloads/vibedraw/vibedraw-comfyui-plugin-v2.0.0.zip
 ```
 
-官网副本放在 `hermitweb/public/downloads/vibedraw/`，与仓库 `release/` 里的字节一致（sha256 `a98fdbb7…15adc9`）。
+官网副本放在 `hermitweb/public/downloads/vibedraw/`，与仓库 `release/` 里的字节一致。安装与自测的完整说明见 `comfyui-plugin/README.md`。
 
-VibeDraw 将 API-format workflow 和当前输入提交到插件的 `/vibedraw/v1/jobs`，插件再调用 ComfyUI 原生队列。VibeDraw 轮询插件任务状态，并直接从 ComfyUI `/view` 读取输出图片；checkpoint、节点结构和具体模型仍由用户工作流控制。
+VibeDraw 客户端把画布与参数提交到 `/vibedraw/v1/jobs`，插件按任务装配内置工作流并调用 ComfyUI 原生队列，成图由插件自己的路由下发。三套图使用哪个 checkpoint、用什么采样器，由用户在配置节点决定，与客户端解耦。
 
 ## 验证
 

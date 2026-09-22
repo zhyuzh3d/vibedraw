@@ -4,7 +4,7 @@
   var app = global.vibedraw = global.vibedraw || {};
   var listeners = {};
 
-  app.version = "0.4.25";
+  app.version = "0.4.28";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -58,12 +58,33 @@
   };
 
   app.defaults = {
-    schema: 6,
+    schema: 7,
     preferences: { theme: "system", language: "zh" },
     quick: {
       slot: "quick",
-      name: "实时快速模型",
-      protocol: "sd-webui",
+      task: "quick",
+      name: "快速生图",
+      protocol: "cvp",
+      endpoint: "",
+      apiKey: "",
+      model: "",
+      inputMode: "sketch",
+      width: 512,
+      height: 512,
+      steps: 8,
+      refStrength: 0.55,
+      growMaskBy: 8,
+      quality: "low",
+      timeoutMs: 60000,
+      customHeaders: "",
+      workflow: "",
+      guidanceScale: 2
+    },
+    inpaint: {
+      slot: "inpaint",
+      task: "inpaint",
+      name: "局部重绘",
+      protocol: "cvp",
       endpoint: "",
       apiKey: "",
       model: "",
@@ -71,25 +92,30 @@
       width: 512,
       height: 512,
       steps: 6,
+      refStrength: 0.3,
+      growMaskBy: 8,
       quality: "low",
-      timeoutMs: 45000,
+      timeoutMs: 90000,
       customHeaders: "",
       workflow: "",
       guidanceScale: 2
     },
-    quality: {
-      slot: "quality",
-      name: "高质量模型",
-      protocol: "openai-images",
+    upscale: {
+      slot: "upscale",
+      task: "upscale",
+      name: "高清渲染",
+      protocol: "cvp",
       endpoint: "",
       apiKey: "",
-      model: "gpt-image-1",
+      model: "",
       inputMode: "sketch",
       width: 1024,
       height: 1024,
-      steps: 28,
+      steps: 8,
+      refStrength: 0.75,
+      growMaskBy: 8,
       quality: "high",
-      timeoutMs: 180000,
+      timeoutMs: 240000,
       customHeaders: "",
       workflow: "",
       guidanceScale: 1

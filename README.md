@@ -2,6 +2,22 @@
 
 VibeDraw 是一个可直接运行在 HermitApp 中的开源 AI 绘图 happ。它把手绘草稿、提示词和可选蒙版发送到用户自己配置的图像模型，不内置平台 API Key，也不依赖 fal.ai。
 
+产品定位是「第一款真正实时的 AI 绘图工具」：画图不能只靠提示词，耗时的图生图也不够——VibeDraw 让人随手涂鸦、AI 实时成图，通常一秒内就能看到结果。作品与配置全部保存在本机，模型既能直接用 API Key 对接云端服务，也能接本地大模型。
+
+## 安装与站点
+
+VibeDraw 是 HermitApp 的 happ，不能脱离宿主单独安装。
+
+1. 先安装 HermitApp：[下载页](https://hermit.airen.life/pages/download.html)（Android 10 及以上）。
+2. 再添加 VibeDraw：在[应用广场](https://hermit.airen.life/pages/happs.html)扫描 VibeDraw 二维码，或直接打开官方安装清单 `https://hermit.airen.life/downloads/happs/com.zhyuzh.vibedraw/hermit-install.json`。
+
+- 产品网站：<https://vibedraw.airen.life/>，包含实时生图、涂鸦工具、模型接入与上手流程的完整说明。
+- happ id：`com.zhyuzh.vibedraw`，当前源码版本 `0.4.26`。
+- 源码仓库：<https://github.com/zhyuzh3d/vibedraw>。
+- 相关 happ：chataxi（<https://chataxi.airen.life/>）是同一宿主上的 AI 对话应用；两者互不依赖，只做相互推荐。
+
+因为 VibeDraw 就运行在 Hermit 里，整个应用都是可读可改的原生 HTML、CSS、JavaScript 源码，用户可以在开发模式下自行定制。
+
 ## 主要能力
 
 - 紧凑绘图工作台：左对齐品牌与版本、画布上方单行提示词、可切换的成图层顺序、独立生成操作区；点击主要操作后显示简短用途说明。

@@ -4,11 +4,12 @@
   "name": "VibeDraw",
   "author": "zhyuzh",
   "version": {
-    "code": 63,
-    "name": "0.4.25"
+    "code": 64,
+    "name": "0.4.26"
   },
   "entry": "index.html",
   "routing": "hash",
+  "icon": "app/assets/icon.webp",
   "display": {
     "orientation": "portrait",
     "keyboard": "resize"

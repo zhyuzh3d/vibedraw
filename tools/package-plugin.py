@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "comfyui-plugin"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 ARCHIVE = ROOT / "release" / f"vibedraw-comfyui-plugin-v{VERSION}.zip"
 FIXED_TIMESTAMP = (2026, 9, 17, 0, 0, 0)
 ENTRIES = ("vibedraw_comfy", "README.md")
@@ -33,7 +33,13 @@ def plugin_files() -> list[pathlib.Path]:
         if target.is_file():
             files.append(target)
         elif target.is_dir():
-            files.extend(path for path in target.rglob("*") if path.is_file())
+            # Bytecode caches are build leftovers from whatever machine last imported
+            # the plugin; they must never travel in the published archive.
+            files.extend(
+                path
+                for path in target.rglob("*")
+                if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+            )
         else:
             raise SystemExit(f"missing plugin path: {relative}")
     return sorted(files, key=lambda path: path.relative_to(SOURCE).as_posix())

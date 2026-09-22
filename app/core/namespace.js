@@ -4,7 +4,7 @@
   var app = global.vibedraw = global.vibedraw || {};
   var listeners = {};
 
-  app.version = "0.4.34";
+  app.version = "0.4.37";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -59,8 +59,13 @@
   };
 
   app.defaults = {
-    schema: 7,
+    schema: 8,
     preferences: { theme: "system", language: "zh" },
+    // One ComfyUI plugin serves all three tasks, so they share one connection:
+    // address, password and custom headers live here and are copied into every CVP
+    // task on load and on save. Selecting CVP in another task adopts this; editing it
+    // anywhere edits all three. The task-specific settings stay per task.
+    connection: { endpoint: "", apiKey: "", customHeaders: "" },
     quick: {
       slot: "quick",
       task: "quick",

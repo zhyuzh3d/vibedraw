@@ -20,8 +20,18 @@
   var MAX_IMAGE_SIZE = WIDTH * 3;
   var MIN_STROKE_SIZE = 3;
   var GESTURE_THRESHOLD = 12;
-  var HISTORY_MAX_ENTRIES = 60;
+  // The journal always holds the current state plus one entry per undoable
+  // action, so "120 undo steps" is 121 stored states. A finished generation is
+  // one step, which is what makes 120 consecutive generations 120 steps back.
+  var HISTORY_MAX_UNDO_STEPS = 120;
+  var HISTORY_MAX_ENTRIES = HISTORY_MAX_UNDO_STEPS + 1;
   var HISTORY_MAX_WEIGHT = 12 * 1024 * 1024;
+  // Older results live only in this journal and are never written to Hermit data,
+  // so their encoded size is bounded here instead: the ceiling fits 120 typical
+  // 512 px results, while a pathological run cannot exhaust the WebView heap.
+  // Characters are counted per entry, which over-counts an image two entries
+  // share and errs on the safe side.
+  var HISTORY_MAX_RESULT_CHARS = 96 * 1024 * 1024;
 
   function resultColorFilter(settings) {
     settings = settings || state;
@@ -566,48 +576,78 @@
   }
   function snapshot() {
     var objects = app.drawing.cloneObjects(state.objects);
-    return { objects: objects, background: state.background, _weight: app.drawing.estimateWeight(objects) };
+    var result = state.result || null;
+    // The result travels by reference: each generation replaces it as a whole, and
+    // cloning it would copy a multi-hundred-kilobyte data URL into every entry.
+    return { objects: objects, background: state.background, result: result,
+      _weight: app.drawing.estimateWeight(objects), _resultChars: result && result.src ? String(result.src).length : 0 };
   }
   function cloneSnapshot(value) {
-    return { objects: app.drawing.cloneObjects(value && value.objects || []), background: value && value.background || "#ffffff", _weight: value && value._weight || app.drawing.estimateWeight(value && value.objects || []) };
+    var objects = value && value.objects || [];
+    return { objects: app.drawing.cloneObjects(objects), background: value && value.background || "#ffffff", result: value && value.result || null,
+      _weight: value && value._weight || app.drawing.estimateWeight(objects), _resultChars: value && value._resultChars || 0 };
   }
   function trimHistory() {
     while (state.history.length > HISTORY_MAX_ENTRIES) state.history.shift();
-    var weight = state.history.reduce(function (sum, item) { return sum + (item._weight || 0); }, 0);
-    while (state.history.length > 2 && weight > HISTORY_MAX_WEIGHT) { weight -= state.history[0]._weight || 0; state.history.shift(); }
+    var weight = 0, resultChars = 0;
+    state.history.forEach(function (item) { weight += item._weight || 0; resultChars += item._resultChars || 0; });
+    function dropOldest() {
+      var removed = state.history.shift();
+      weight -= removed._weight || 0; resultChars -= removed._resultChars || 0;
+    }
+    while (state.history.length > 2 && weight > HISTORY_MAX_WEIGHT) dropOldest();
+    while (state.history.length > 2 && resultChars > HISTORY_MAX_RESULT_CHARS) dropOldest();
   }
-  function restore(value) {
+  function restore(value, options) {
     var data = typeof value === "string" ? app.utils.parseJson(value, { objects: [], background: "#ffffff" }) : cloneSnapshot(value);
+    var previousResult = state.result;
     state.objects = app.drawing.cloneObjects(data.objects || []);
     state.background = data.background || "#ffffff";
+    // Only the current result keeps its files on disk: an image that sat in history
+    // had its chunks reclaimed the moment a newer one was saved. Carrying that stale
+    // reference back would be written into the artwork and break its image on the
+    // next load, so the reference is dropped and the next save persists it again.
+    // The shell is rebuilt rather than edited because journal entries share the
+    // result object and must never be mutated here.
+    state.result = data.result ? { src: data.result.src, logicalFileId: data.result.logicalFileId || "",
+      slot: data.result.slot, prompt: data.result.prompt, createdAt: data.result.createdAt } : null;
     setSelection([]);
     state.objects.forEach(function (object) { if (object.type === "image") loadImage(object.src || object.url, true); });
     render();
     app.events.emit("history", { undo: state.history.length > 1, redo: state.future.length > 0 });
     emitSelection();
+    if (state.result !== previousResult) app.events.emit("result:changed");
     app.services.store.scheduleCanvasSave();
-    app.services.imageEngine.schedule();
+    // Stepping a result back must not immediately ask the model for another one:
+    // the automatic pass would overwrite the image the user just recovered.
+    if (!options || options.schedule !== false) app.services.imageEngine.schedule();
   }
   function resetHistory() { drawingObject = null; dragging = null; resizing = null; pinching = null; selectionGesture = null; selectionMarquee = null; activePointers = {}; boundsCache = new WeakMap(); state.history = [snapshot()]; state.future = []; app.events.emit("history", { undo: false, redo: false }); }
-  function commit() {
+  function commit() { commitEntry("canvas"); app.services.imageEngine.schedule(); }
+  // A finished generation is artwork data, so it joins the journal as a step of
+  // its own: one Undo goes back to the previous image. The kind tag keeps undo
+  // from re-running the engine, which would overwrite the recovered image at once.
+  function commitResult() { commitEntry("result"); }
+  function commitEntry(kind) {
     var next = snapshot();
+    next._kind = kind;
     state.history.push(next); trimHistory();
     state.future = [];
     app.events.emit("history", { undo: state.history.length > 1, redo: false });
     emitSelection();
     app.services.store.scheduleCanvasSave();
-    app.services.imageEngine.schedule();
   }
   function undo() {
     if (state.history.length <= 1) return;
-    state.future.push(state.history.pop());
-    restore(state.history[state.history.length - 1]);
+    var undone = state.history.pop();
+    state.future.push(undone);
+    restore(state.history[state.history.length - 1], { schedule: undone._kind !== "result" });
   }
   function redo() {
     if (!state.future.length) return;
     var value = state.future.pop();
     state.history.push(value);
-    restore(value);
+    restore(value, { schedule: value._kind !== "result" });
   }
   function removeSelected() {
     var ids = selectionIds(); if (!ids.length) return;
@@ -853,6 +893,8 @@
     });
     state.objects = saved.objects || [];
     state.result = saved.result || null;
+    // The last render is part of the artwork, so it comes back with it.
+    state.renderResult = saved.render || null;
     setSelection([]);
     state.objects.forEach(function (object) {
       if (object.type === "image") { object.src = object.src || object.url; loadImage(object.src, true); }
@@ -880,6 +922,7 @@
     render: render,
     refresh: refresh,
     commit: commit,
+    commitResult: commitResult,
     undo: undo,
     redo: redo,
     removeSelected: removeSelected,
@@ -908,6 +951,6 @@
     resultGlowFilter: resultGlowFilter,
     drawResult: drawResult,
     syncSharpenFilter: syncSharpenFilter,
-    performance: function () { return { frames: performance.frames, contentRebuilds: performance.contentRebuilds, objectsDrawn: performance.objectsDrawn, imageCache: imageCache.stats(), historyEntries: state.history.length, futureEntries: state.future.length }; }
+    performance: function () { return { frames: performance.frames, contentRebuilds: performance.contentRebuilds, objectsDrawn: performance.objectsDrawn, imageCache: imageCache.stats(), undoLimit: HISTORY_MAX_UNDO_STEPS, historyEntries: state.history.length, futureEntries: state.future.length }; }
   };
 })(window.vibedraw);

@@ -48,12 +48,13 @@ def _resolve(value: str) -> str:
 
 
 class VibeDrawConfig:
-    """Store the plugin password and the checkpoints used by every task."""
+    """Store the plugin password, the checkpoints, and the translator address."""
 
     @classmethod
     def INPUT_TYPES(cls) -> dict[str, Any]:
         choices = _choice_list()
         stored = settings_module.load()
+        translation = settings_module.translate()
         quick_choices = [name for name in choices if name != SAME_AS_QUICK]
         stored_quick = str(stored["checkpoints"].get("quick") or "").strip()
         return {
@@ -62,7 +63,12 @@ class VibeDrawConfig:
                 "quick_checkpoint": (quick_choices or [SAME_AS_QUICK], {"default": stored_quick or _quick_default(choices)}),
                 "inpaint_checkpoint": (choices, {"default": _resolve(stored["checkpoints"].get("inpaint", "")) or SAME_AS_QUICK}),
                 "upscale_checkpoint": (choices, {"default": _resolve(stored["checkpoints"].get("upscale", "")) or SAME_AS_QUICK}),
-            }
+            },
+            # Optional so a graph saved before translation existed still loads.
+            "optional": {
+                "translate_prompts": ("BOOLEAN", {"default": bool(translation["enabled"])}),
+                "translator_url": ("STRING", {"default": str(translation["url"] or ""), "multiline": False}),
+            },
         }
 
     RETURN_TYPES = ("STRING",)
@@ -70,21 +76,37 @@ class VibeDrawConfig:
     FUNCTION = "apply"
     CATEGORY = "VibeDraw"
     DESCRIPTION = (
-        "Write the VibeDraw password and checkpoints. Queue this node once after every change; "
+        "Write the VibeDraw password, checkpoints and translator address. Queue this node once after every change; "
         "leaving the password empty disables authentication and lets anyone on your network draw. "
-        "Set the VIBEDRAW_PASSWORD environment variable instead to keep the password out of the graph."
+        "Set the VIBEDRAW_PASSWORD environment variable instead to keep the password out of the graph. "
+        "The translator turns Chinese prompts into English, because no checkpoint here reads Chinese; "
+        "leave its address empty to switch that off and require English prompts."
     )
     OUTPUT_NODE = True
 
-    def apply(self, password: str, quick_checkpoint: str, inpaint_checkpoint: str, upscale_checkpoint: str) -> tuple[str]:
-        saved = settings_module.update(
-            password=str(password or ""),
-            checkpoints={
+    def apply(
+        self,
+        password: str,
+        quick_checkpoint: str,
+        inpaint_checkpoint: str,
+        upscale_checkpoint: str,
+        translate_prompts: bool | None = None,
+        translator_url: str | None = None,
+    ) -> tuple[str]:
+        patch: dict[str, Any] = {
+            "password": str(password or ""),
+            "checkpoints": {
                 "quick": str(quick_checkpoint or "").strip(),
                 "inpaint": _resolve(inpaint_checkpoint),
                 "upscale": _resolve(upscale_checkpoint),
             },
-        )
+        }
+        if translate_prompts is not None or translator_url is not None:
+            patch["translate"] = {
+                "enabled": True if translate_prompts is None else bool(translate_prompts),
+                "url": settings_module.default_translate_url() if translator_url is None else str(translator_url).strip(),
+            }
+        saved = settings_module.update(**patch)
         environment = settings_module.password()
         if environment:
             protection = "密码来自 VIBEDRAW_PASSWORD 环境变量"
@@ -92,7 +114,12 @@ class VibeDrawConfig:
             protection = "已启用密码保护"
         else:
             protection = "未设密码，局域网内任何人都可以出图"
-        return (f"VibeDraw 设置已保存 · 快速 {saved['checkpoints']['quick'] or '未选'} · {protection}",)
+        translation = settings_module.translate()
+        if translation["enabled"]:
+            translating = f"中文自动译英 → {translation['url']}"
+        else:
+            translating = "翻译已关闭，提示词需为英文"
+        return (f"VibeDraw 设置已保存 · 快速 {saved['checkpoints']['quick'] or '未选'} · {translating} · {protection}",)
 
 
 class VibeDrawInput:

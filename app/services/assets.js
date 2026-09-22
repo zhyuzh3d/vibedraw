@@ -66,7 +66,12 @@
   }
   function references(snapshot) {
     var refs = [];
-    (snapshot && snapshot.objects || []).concat(snapshot && snapshot.result ? [snapshot.result] : []).forEach(function (item) {
+    // The last render is artwork data and lives in the record, so its files must
+    // survive the cleanup that runs when the artwork's references change.
+    var items = (snapshot && snapshot.objects || []).concat(
+      snapshot && snapshot.result ? [snapshot.result] : [],
+      snapshot && snapshot.render ? [snapshot.render] : []);
+    items.forEach(function (item) {
       if (item.asset && item.asset.parts) refs = refs.concat(item.asset.parts);
       if (item.logicalFileId) refs.push(item.logicalFileId);
     });

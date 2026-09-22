@@ -12,7 +12,7 @@ VibeDraw 是 HermitApp 的 happ，不能脱离宿主单独安装。
 2. 再添加 VibeDraw：在[应用广场](https://hermit.airen.life/pages/happs.html)扫描 VibeDraw 二维码，或直接打开官方安装清单 `https://hermit.airen.life/downloads/happs/com.zhyuzh.vibedraw/hermit-install.json`。
 
 - 产品网站：<https://vibedraw.airen.life/>，包含实时生图、涂鸦工具、模型接入与上手流程的完整说明。
-- happ id：`com.zhyuzh.vibedraw`，当前源码版本 `0.4.26`。
+- happ id：`com.zhyuzh.vibedraw`，当前源码版本 `0.4.37`。
 - 源码仓库：<https://github.com/zhyuzh3d/vibedraw>。
 - 相关 happ：chataxi（<https://chataxi.airen.life/>）是同一宿主上的 AI 对话应用；两者互不依赖，只做相互推荐。
 

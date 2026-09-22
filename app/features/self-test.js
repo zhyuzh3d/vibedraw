@@ -108,6 +108,35 @@
       checks.resultOpacityFloor = Math.abs(app.state.resultOpacity - 0.2) < 0.001 && document.getElementById("result-image").style.opacity === "0.2";
       document.getElementById("result-visibility").click(); checks.resultVisibility = app.state.resultVisible === false && document.getElementById("result-image").hidden;
       document.getElementById("result-visibility").click();
+      // A finished generation is an undoable step: Undo steps the result back to
+      // the previous image and Redo brings the newer one back. The render is not
+      // part of that journal, so stepping through results must leave it alone.
+      step("result-history");
+      var secondResult = { src: imageSrc, slot: "quick", prompt: "self-test second", createdAt: Date.now() };
+      var previousResultForUndo = app.state.result;
+      app.state.result = secondResult; canvas.commitResult();
+      app.state.renderResult = { src: imageSrc, logicalFileId: "", slot: "upscale", createdAt: Date.now() }; editor.syncAll();
+      canvas.undo();
+      // Stepping back rebuilds the result and drops its file reference, so the image
+      // is identified by its data, not by object identity.
+      checks.resultUndo = Boolean(app.state.result) && app.state.result.src === previousResultForUndo.src && app.state.result.prompt === "self-test";
+      checks.resultUndoRef = Boolean(app.state.result) && !app.state.result.asset;
+      checks.renderOutsideUndo = Boolean(app.state.renderResult && app.state.renderResult.slot === "upscale");
+      canvas.redo();
+      checks.resultRedo = Boolean(app.state.result) && app.state.result.src === secondResult.src;
+      // A local redraw is a generation like any other, so it lands in the journal the
+      // same way: one Undo returns the image the redraw replaced. Driven through
+      // generation:done so the editor's own branch decides, not this test.
+      step("inpaint-history");
+      var beforeInpaint = app.state.result;
+      app.state.result = { src: imageSrc, slot: "inpaint", prompt: "self-test inpaint", createdAt: Date.now() };
+      app.events.emit("generation:done", app.state.result);
+      await new Promise(function (resolve) { setTimeout(resolve, 30); });
+      canvas.undo();
+      checks.inpaintUndo = Boolean(app.state.result) && app.state.result.src === beforeInpaint.src;
+      canvas.redo();
+      checks.inpaintRedo = Boolean(app.state.result) && app.state.result.slot === "inpaint";
+      canvas.undo();
       var resultVisibleBefore = app.state.resultVisible, toolBefore = app.state.tool === "mask" ? "pencil" : app.state.tool;
       editor.setTool("mask"); editor.syncCanvas();
       var maskSlider = document.getElementById("result-opacity"), maskEye = document.getElementById("result-visibility"), maskLabel = document.getElementById("opacity-target-label");
@@ -140,6 +169,7 @@
       app.services.assets.clearCache();
       step("restoring"); editor.resetWork(); var restored = await store.restoreWork(tempId, false); canvas.load(restored); editor.syncAll();
       checks.filesystemReadback = restored.result.src === imageSrc;
+      checks.renderRestore = Boolean(app.state.renderResult && app.state.renderResult.slot === "upscale" && app.state.renderResult.src === imageSrc);
       checks.restore = app.state.prompt.indexOf("History and image round trip") === 0 && app.state.objects.length === count && app.state.result.src === imageSrc;
       checks.fileSettingsRestore = app.state.autoDelayMs === 1320 && app.state.resultOpacity === 0.23 && app.state.layerOpacity === 1 && app.state.resultVisible === true && app.state.resultGlow === 38 && app.state.resultClarity === 24 && app.state.colorStrength === 0.47 && app.state.resultAdjustmentsEnabled === true;
       checks.imageRestore = app.state.objects.some(function (object) { return object.type === "image" && object.src === imageSrc; });
@@ -190,6 +220,13 @@
       app.components.settings.openColor("stroke");
       var pickerOpacity = document.querySelector('[name="colorOpacity"]'); pickerOpacity.value = "37"; pickerOpacity.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("[data-save]").click();
       checks.colorOpacityToolSync = app.state.opacity === 0.37 && document.getElementById("stroke-opacity").value === "37" && document.getElementById("stroke-opacity-value").textContent === "37%";
+      // The image-weight slider is the only control that writes state.strength, so
+      // its declared range and the clamp on the value it writes must agree.
+      var strengthSlider = document.getElementById("prompt-strength"), strengthBefore = app.state.strength;
+      app.state.strength = 0.05; editor.syncAll(); var strengthFloor = strengthSlider.value;
+      app.state.strength = 1.5; editor.syncAll(); var strengthCeiling = strengthSlider.value;
+      app.state.strength = strengthBefore; editor.syncAll();
+      checks.promptStrengthRange = strengthSlider.min === "20" && strengthSlider.max === "100" && strengthFloor === "20" && strengthCeiling === "100" && strengthSlider.value === "80";
       step("layout"); app.config.preferences = { theme: "dark", language: "en" }; app.i18n.theme(); editor.syncAll();
       checks.theme = document.documentElement.dataset.theme === "dark" && getComputedStyle(document.body).backgroundColor === "rgb(23, 25, 29)";
       checks.language = document.documentElement.lang === "en" && document.querySelector('[data-menu="history"] span').textContent === "Your artwork";
@@ -304,7 +341,9 @@
       document.body.classList.remove("keyboard-focus"); ui.close();
       checks.brandLeft = document.querySelector(".brand").getBoundingClientRect().left <= 24 && document.getElementById("app-version").textContent === "v" + app.version;
       var performanceState = canvas.performance(), assetPerformance = app.services.assets.performance();
-      checks.performanceBounds = performanceState.imageCache.entries <= 16 && performanceState.historyEntries <= 60 && assetPerformance.cache.entries <= 10;
+      // The journal keeps the current state plus one entry per undoable action,
+      // so a 120-step limit is 121 entries.
+      checks.performanceBounds = performanceState.imageCache.entries <= 16 && performanceState.undoLimit === 120 && performanceState.historyEntries <= performanceState.undoLimit + 1 && assetPerformance.cache.entries <= 10;
       var generate = document.getElementById("generate-quality").getBoundingClientRect();
       checks.actionsVisible = generate.left >= 0 && generate.right <= window.innerWidth && generate.bottom <= window.innerHeight;
       checks.bridgeReady = Boolean(window.hermit.isReady);

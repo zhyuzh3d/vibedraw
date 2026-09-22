@@ -21,11 +21,13 @@ REFERENCE_FLOOR = 0.05
 DENOISE_MINIMUM = 0.05
 DENOISE_MAXIMUM = 1.0
 
-#: Upscaling always encodes the *whole* canvas at this base size and then grows
-#: the latent.  Encoding a 2048 px image directly would need roughly sixteen times
-#: the memory for no extra quality, and every SD1.5-derived model is trained at
-#: 512 anyway.
-UPSCALE_BASE = 512
+#: Upscaling encodes the reference at its own resolution up to this cap, and only
+#: grows the latent above it.  The cap is what keeps a 2048 px job from needing
+#: roughly four times the memory of a 1024 px one.  It is deliberately *not* 512:
+#: encoding at 512 and growing the latent afterwards put the reference through a
+#: lossy round trip before the sampler ever saw it, which is why a "render" came
+#: out soft and partly re-invented instead of sharper than the canvas it came from.
+UPSCALE_ENCODE_MAX = 1024
 
 
 def denoise_from_reference(ref_strength: float) -> float:
@@ -102,8 +104,8 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
         "id": "upscale",
         "label": {"zh": "放大绘制", "en": "Upscale draw"},
         "description": {
-            "zh": "把 512 的画布放大到 1024 或 2048 并补细节；模型只要能接受 512 参考图、输出大图即可。",
-            "en": "Upscale the 512 canvas to 1024 or 2048 and add detail. Any model that accepts a 512 reference works.",
+            "zh": "把画布放大到 1024 或 2048 并补细节；参考图按原分辨率（上限 1024）直接编码，模型只要能接受同尺寸参考图即可。",
+            "en": "Upscale the canvas to 1024 or 2048 and add detail. The reference is encoded at its own resolution, capped at 1024, so any model that accepts a same-size reference works.",
         },
         "needs": {"image": True, "mask": False, "prompt": True},
         "sizes": [[1024, 1024], [2048, 2048]],
@@ -216,8 +218,12 @@ def build(
     }
 
     if task == "upscale":
-        graph["3"] = _scale(["2", 0], UPSCALE_BASE, UPSCALE_BASE)
+        # The reference keeps the resolution the client sent, up to the cap, so the
+        # sampler starts from the real picture instead of a 512 px impression of it.
+        encode = (min(int(width), UPSCALE_ENCODE_MAX), min(int(height), UPSCALE_ENCODE_MAX))
+        graph["3"] = _scale(["2", 0], encode[0], encode[1])
     else:
+        encode = (int(width), int(height))
         graph["3"] = _scale(["2", 0], width, height)
 
     if task == "inpaint":
@@ -233,7 +239,8 @@ def build(
         graph["4"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["3", 0], "vae": ["1", 2]}}
         latent = ["4", 0]
 
-    if task == "upscale":
+    if task == "upscale" and encode != (int(width), int(height)):
+        # Only a target larger than the cap is grown from the smaller latent.
         graph["12"] = _latent_upscale(["4", 0], width, height)
         latent = ["12", 0]
 

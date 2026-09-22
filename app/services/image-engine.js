@@ -3,6 +3,13 @@
   var timer = 0, running = false, queuedSlot = "", generation = 0, dismissed = false;
   var canvasInput = null;
   var t = app.i18n.text;
+  // Rendering is not a fresh painting. It enlarges the picture already on the
+  // canvas and repairs its detail, so the reference image is what carries the
+  // content and the prompt only says how to treat it. The artwork description
+  // follows as a hint at what the model is looking at, never as an instruction to
+  // paint that description again; the render negatives push the same way.
+  var RENDER_PROMPT = "high resolution upscale of this exact image, keep composition, colors and every element identical, repair detail only, no repaint";
+  var RENDER_NEGATIVE = "repaint, redrawn, changed composition, different framing, extra elements, missing elements, restyled, altered colors";
   function configured(slot) {
     var config = app.config && app.config[slot];
     return Boolean(config && config.endpoint);
@@ -57,7 +64,22 @@
     // A local redraw states what the marked area should become. Submitting the
     // artwork-wide prompt as well would drag the whole composition into the
     // patched region, so only the local description travels with the mask.
-    var prompt = masking ? app.utils.composePrompt("", app.state.localPrompt) : app.utils.composePrompt(app.state.prompt, "");
+    // A render leads with the fidelity instruction, so the artwork description can
+    // never read as "paint this picture again", and it no longer needs one at all.
+    // What leaves is the English of a saved prompt, because every text encoder here
+    // reads Chinese as noise. Nothing is translated in this path — the cache is a
+    // lookup, and saving the prompt is what fills it.
+    var english = app.services.translate.english;
+    var prompt = masking ? app.utils.composePrompt("", english(app.state.localPrompt))
+      : slot === "upscale" ? app.utils.composePrompt(RENDER_PROMPT, english(app.state.prompt))
+      : app.utils.composePrompt(english(app.state.prompt), "");
+    var negativePrompt = slot === "upscale" ? app.utils.composePrompt(RENDER_NEGATIVE, english(app.state.negativePrompt)) : english(app.state.negativePrompt);
+    // Whatever the reason, a prompt that is still Chinese will be read as noise by
+    // every text encoder here, so each drawing says so instead of quietly producing
+    // something unrelated. The toast repeats with the drawing, because the mistake
+    // repeats with it; the wording points at the settings that can fix it.
+    var untranslated = (masking ? [app.state.localPrompt] : [app.state.prompt, app.state.negativePrompt]).filter(function (value) { return app.services.translate.hasCjk(english(value)); });
+    if (untranslated.length) app.components.ui.toast(t("提示词只能使用英文,请检查翻译大模型设置", "Prompts can only be in English. Check your translation model settings."), "error");
     var config = app.utils.copy(app.config[slot]);
     config.slot = slot; config.task = slot;
     if (slot === "upscale") config.inputMode = "sketch";
@@ -104,7 +126,7 @@
       };
       if (masking) referenceOptions.withResult = true;
       if (slot === "upscale") referenceOptions.size = Number(config.width) || 1024;
-      var input = { prompt: prompt, negativePrompt: app.state.negativePrompt, seed: app.state.seedLocked ? app.state.seed : -1, strength: app.state.strength, colorStrength: app.state.colorStrength,
+      var input = { prompt: prompt, negativePrompt: negativePrompt, seed: app.state.seedLocked ? app.state.seed : -1, strength: app.state.strength, colorStrength: app.state.colorStrength,
         imageDataUrl: slot === "upscale" ? await canvasInput.composeVisibleInput(referenceOptions) : await canvasInput.composeInput(referenceOptions),
         maskDataUrl: maskDataUrl, openAiMaskDataUrl: openAiMaskDataUrl };
       var result = await withDeadline(app.services.providers.generate(config, input), overallTimeout(config));

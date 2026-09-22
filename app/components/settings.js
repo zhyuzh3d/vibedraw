@@ -49,6 +49,38 @@
     if (JSON.stringify(draft) === original) return true;
     return ui.confirm({ title: t("放弃未保存的修改？", "Discard changes?"), message: t("模型设置尚未保存。", "Your model settings have not been saved."), ok: t("放弃修改", "Discard") });
   }
+  // A happ cannot read its own bundled files (the host serves documents with
+  // connect-src 'none'), so the plugin archive travels as bytes generated into
+  // app/assets/comfyui-plugin.js at packaging time. Writing them out through the
+  // host and handing the stored file to the export flow gives the user exactly the
+  // archive that release/vibedraw-comfyui-plugin-v*.zip holds.
+  async function downloadPlugin() {
+    var bundle = app.comfyuiPlugin, bridge = app.platform.hermit.current();
+    if (!bundle || !bundle.base64) throw new Error(t("这个版本没有内置插件包，请到官网下载", "This build ships no plugin package; download it from the site"));
+    if (!bridge) throw new Error(t("保存插件需要 Hermit 宿主环境", "Saving the plugin needs the Hermit host"));
+    var writeId = "", stored = null;
+    try {
+      var write = await bridge.files.beginWrite({ name: bundle.name, mime: "application/zip" });
+      writeId = write.writeId;
+      // One append carries at most maxChunkBytes of decoded data, and base64 spends
+      // four characters per three bytes, so the character cap is that byte cap
+      // rounded down to a whole three-byte group and re-expanded.
+      var cap = Number(write.maxChunkBytes) || 65536;
+      var chunk = Math.max(3072, Math.floor(cap / 3) * 4);
+      for (var offset = 0; offset < bundle.base64.length; offset += chunk) {
+        await bridge.files.appendBytes({ writeId: writeId, chunkBase64: bundle.base64.slice(offset, offset + chunk) });
+      }
+      stored = await bridge.files.finishWrite({ writeId: writeId }); writeId = "";
+      // export() opens the system save dialog: the user picks a folder and the host
+      // copies the stored bytes there. Nothing leaves the device or the network.
+      var exported = await bridge.files.export({ logicalFileId: stored.logicalFileId });
+      if (exported && exported.cancelled) return;
+      ui.toast(t("插件包已保存", "Plugin package saved"));
+    } finally {
+      if (writeId) await bridge.files.abortWrite({ writeId: writeId }).catch(function () {});
+      if (stored) await bridge.files.delete({ logicalFileId: stored.logicalFileId }).catch(function () {});
+    }
+  }
   function open(kind) {
     ui = app.components.ui;
     if (kind === "models") { draft = u.copy(app.config); original = JSON.stringify(draft); slot = "quick"; renderModels(); }
@@ -68,31 +100,58 @@
       : '<strong>' + model.width + " × " + model.height + '</strong>';
     return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>1:1</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
   }
+  var TRANSLATE_TAB = ["translate", "翻译", "Translation"];
+  // The translator belongs to the plugin and exists for Chinese prompts, so its tab
+  // only appears while the interface is Chinese: an English prompt needs no
+  // translation, and the tab would then be an empty promise.
+  function wantsTranslateTab() { return app.i18n.language() === "zh"; }
   function renderModels() {
-    var model = draft[slot], protocol = model.protocol, cvp = protocol === "cvp";
+    if (slot === "translate" && !wantsTranslateTab()) slot = "quick";
+    var translating = slot === "translate";
+    var model = draft[slot] || draft.quick, protocol = translating ? "cvp" : model.protocol, cvp = protocol === "cvp";
+    // The three CVP tasks share one address, password and header set, so the form
+    // reads and writes that single object instead of this task's own copy. Switching
+    // tasks therefore shows the same connection, and the store re-derives each task
+    // from it when the settings are saved.
+    var shared = draft.connection || (draft.connection = { endpoint: "", apiKey: "", customHeaders: "" });
     var choices = app.services.providers.protocols.map(function (p) { return [p.id, p.name]; });
-    var tabs = SLOT_TABS.map(function (entry) {
+    var tabs = (wantsTranslateTab() ? SLOT_TABS.concat([TRANSLATE_TAB]) : SLOT_TABS).map(function (entry) {
       return '<button data-slot-tab="' + entry[0] + '" class="' + (slot === entry[0] ? "is-active" : "") + '">' + t(entry[1], entry[2]) + '</button>';
     }).join("");
     var secretLabel = cvp ? t("访问密码", "Access password") : "API Key";
     var secretHint = cvp
       ? t("在 ComfyUI 的 VibeDraw 配置节点里设置；留空表示插件没有启用密码", "Set it in the ComfyUI VibeDraw config node; leave empty when the plugin has no password")
       : t("免鉴权的本地服务可留空", "Optional for local services");
+    var secretField = '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(cvp ? shared.apiKey : model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>';
+    var sharedHelp = '<p class="field-help">' + t("三个任务的 CVP 地址与密码是同一套：在这里改，三个任务一起改。", "The three tasks share one CVP address and password: change it here and all three change together.") + '</p>';
+    // Translating is not a fourth task: it is the plugin's translator, reached through
+    // the same address and password as the three CVP tasks, so the tab locks the API
+    // format to the plugin and borrows that one connection instead of owning a copy.
+    var card = translating
+      ? '<div data-model-card="translate"><p class="model-intro">' + t("中文提示词要先译成英文才能出图,译英由 ComfyUI Vibedraw Plugin 内置的翻译大模型完成,所以这里没有别的选择。", "A Chinese prompt has to be translated before it can be drawn, and the ComfyUI Vibedraw Plugin's own translation model does that, so this format is the only option here.") + '</p>' +
+        '<div class="field locked-field"><span>' + t("接口模式", "API format") + '</span><strong>ComfyUI Vibedraw Plugin</strong></div>' +
+        input("endpoint", t("服务器地址", "Server address"), shared.endpoint, "url", "http://192.168.1.2:8188") +
+        secretField + sharedHelp +
+        '<button class="button button-secondary" data-test-translate><i class="fa-solid fa-language"></i>' + t("测试翻译", "Test translation") + '</button><p class="connection-status" data-test-translate-status></p>' +
+        '<p class="field-help">' + t("测试会送一句中文过去,回来的是英文才算可用。只要提示词里还有中文,每次生图都会在下方提示你回来检查这里。", "The test sends one Chinese sentence: it is only working if English comes back. While a prompt still holds Chinese, every drawing reminds you to check this tab.") + '</p></div>'
+      : '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
+        select("protocol", t("接口模式", "API format"), protocol, choices) +
+        aspectField(model, slot) +
+        input("endpoint", t("服务器地址", "Server address"), cvp ? shared.endpoint : model.endpoint, "url", cvp ? "http://192.168.1.2:8188" : "https://…") +
+        secretField +
+        (cvp ? sharedHelp : '') +
+        (!cvp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
+        (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的三套工作流决定；点下方按钮可以直接读取插件当前的模型与能力。", "Aspect, steps and reference weight come from the plugin's three built-in workflows. The button below reads the plugin's current model and capabilities.") + '</p>' : '') +
+        '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + (cvp ? input("refStrength", t("参考图权重基准", "Reference weight"), model.refStrength, "number") : '') + '</div>' +
+        (cvp ? '<div class="field-row">' + input("growMaskBy", t("蒙版外扩（像素）", "Mask grow (px)"), model.growMaskBy, "number") + '</div>' : '') +
+        (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
+        textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), cvp ? shared.customHeaders : model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
+        '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
+        '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p>' +
+        (cvp ? '<button class="button button-secondary" data-plugin-download><i class="fa-solid fa-download"></i>' + t("下载 ComfyUI 插件", "Download ComfyUI plugin") + '</button>' +
+          '<p class="field-help">' + t("插件包随本应用一起提供。解压到 ComfyUI 的 custom_nodes 目录后重启 ComfyUI，再在 VibeDraw 配置节点里填同样的密码。", "The plugin package ships with this app. Unzip it into ComfyUI's custom_nodes directory, restart ComfyUI, then set the same password in the VibeDraw config node.") + '</p>' : '') + '</div>';
     var root = ui.open({ title: t("模型配置", "Models"), beforeClose: discard, html:
-      '<div class="segmented model-tabs">' + tabs + '</div>' +
-      '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
-      select("protocol", t("接口模式", "API format"), protocol, choices) +
-      aspectField(model, slot) +
-      input("endpoint", t("服务器地址", "Server address"), model.endpoint, "url", cvp ? "http://192.168.1.2:8188" : "https://…") +
-      '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>' +
-      (!cvp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
-      (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的三套工作流决定；点下方按钮可以直接读取插件当前的模型与能力。", "Aspect, steps and reference weight come from the plugin's three built-in workflows. The button below reads the plugin's current model and capabilities.") + '</p>' : '') +
-      '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + (cvp ? input("refStrength", t("参考图权重基准", "Reference weight"), model.refStrength, "number") : '') + '</div>' +
-      (cvp ? '<div class="field-row">' + input("growMaskBy", t("蒙版外扩（像素）", "Mask grow (px)"), model.growMaskBy, "number") + '</div>' : '') +
-      (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
-      textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
-      '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
-      '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p></div>' + footer() });
+      '<div class="segmented model-tabs">' + tabs + '</div>' + card + footer() });
     bindChoices(root);
     root.querySelectorAll("[data-slot-tab]").forEach(function (button) { button.onclick = function () { slot = button.dataset.slotTab; renderModels(); }; });
     root.querySelectorAll("[data-aspect-size]").forEach(function (button) {
@@ -103,16 +162,29 @@
     });
     root.querySelectorAll("[name]").forEach(function (field) {
       var numeric = ["width", "height", "steps", "timeoutMs", "refStrength", "growMaskBy"].indexOf(field.name) >= 0;
+      // These three are the shared CVP connection, so they are written to the one
+      // object as well as to this task's copy (the copy keeps the test button and the
+      // request path reading real values before the settings are saved). The
+      // translation tab has no task of its own, so it writes the shared object only.
+      var sharedField = cvp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0;
       function update() {
-        draft[slot][field.name] = field.name === "apiKey" || field.name === "customHeaders" ? field.value : numeric ? Number(field.value) : field.value;
+        var value = field.name === "apiKey" || field.name === "customHeaders" ? field.value : numeric ? Number(field.value) : field.value;
+        if (sharedField) shared[field.name] = value;
+        if (!translating) draft[slot][field.name] = value;
       }
       if (field.name === "protocol") field.onchange = async function () {
         var previous = model.protocol, protocol = field.value;
         if (model.endpoint || model.apiKey) {
-          var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("当前任务的地址与密码会重置；其他任务不受影响。", "This task's address and password will reset. Other tasks stay unchanged."), ok: t("切换", "Change") });
+          var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("这个任务会改用该接口默认的地址与密码；CVP 的公共连接设置会留给其他任务。", "This task falls back to that format's own address and password. The shared CVP connection stays for the other tasks."), ok: t("切换", "Change") });
           if (!confirmed) { field.value = previous; syncChoice(field); return; }
         }
-        draft[slot] = app.services.providers.preset(protocol, slot); renderModels();
+        var next = app.services.providers.preset(protocol, slot);
+        // Choosing CVP adopts the shared connection; when nothing is configured yet the
+        // preset's example address becomes that connection instead of being dropped.
+        if (protocol === "cvp" && !String(shared.endpoint || "").trim() && !String(shared.apiKey || "").trim()) {
+          shared.endpoint = next.endpoint; shared.apiKey = next.apiKey || ""; shared.customHeaders = next.customHeaders || "";
+        }
+        draft[slot] = next; renderModels();
       };
       else { field.oninput = update; field.onchange = update; }
     });
@@ -125,7 +197,8 @@
       var key = root.querySelector('[name="apiKey"]'); key.value = String(await app.platform.hermit.clipboardRead()).trim();
       key.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    root.querySelector("[data-test]").onclick = ui.action(async function () {
+    var testButton = root.querySelector("[data-test]");
+    if (testButton) testButton.onclick = ui.action(async function () {
       var status = root.querySelector("[data-test-status]");
       status.textContent = t("连接中，不生成图片…", "Connecting without generating an image…");
       try {
@@ -137,6 +210,19 @@
         throw error;
       }
     });
+    var translateTest = root.querySelector("[data-test-translate]");
+    if (translateTest) translateTest.onclick = ui.action(async function () {
+      var status = root.querySelector("[data-test-translate-status]");
+      status.textContent = t("正在测试翻译,不生成图片…", "Testing the translator without generating an image…");
+      try {
+        var probe = await app.services.translate.probe(shared);
+        status.textContent = t("翻译可用（" + probe.engine + "）：" + probe.example + " → " + probe.text, "Translation works (" + probe.engine + "): " + probe.example + " → " + probe.text);
+      } catch (error) {
+        status.textContent = t("翻译不可用:请确认地址,密码正确,且插件端的翻译大模型已启动。", "Translation is unavailable. Check the address and password, and that the plugin's translation model is running.");
+      }
+    });
+    var pluginButton = root.querySelector("[data-plugin-download]");
+    if (pluginButton) pluginButton.onclick = ui.action(downloadPlugin);
     root.querySelector("[data-cancel]").onclick = ui.requestClose;
     root.querySelector("[data-save]").onclick = ui.action(async function () {
       SLOTS.forEach(function (name) {
@@ -153,14 +239,48 @@
   function workSettings() {
     var state = app.state;
     var root = ui.open({ sheetClass: "work-settings-sheet", contentClass: "work-settings-content", title: t("作品设置", "Artwork settings"), footerHtml: footer(t("应用", "Apply")), html:
-      textarea("prompt", t("简述你期望的画面内容（英文）", "Describe the image you expect (English)"), state.prompt, "For example: a blue crystal bird flying over snowy mountains", 3) +
-      textarea("negativePrompt", t("不希望出现内容（英文）", "What to avoid (English)"), state.negativePrompt, "For example: blurry, distorted, text, watermark", 2) +
+      textarea("prompt", t("简述你期望的画面内容（中英文都行）", "Describe the image you expect (Chinese or English)"), state.prompt, "例如:一只蓝色的水晶鸟飞过雪山,清晨的光", 3) +
+      '<div class="translate-row" id="prompt-translate" hidden><p class="field-help" id="prompt-english"></p><button type="button" class="button button-secondary" data-translate-now="prompt">' + t("立即翻译", "Translate now") + '</button></div>' +
+      textarea("negativePrompt", t("不希望出现内容（中英文都行）", "What to avoid (Chinese or English)"), state.negativePrompt, "例如:模糊,变形,水印", 2) +
+      '<div class="translate-row" id="negativePrompt-translate" hidden><p class="field-help" id="negativePrompt-english"></p><button type="button" class="button button-secondary" data-translate-now="negativePrompt">' + t("立即翻译", "Translate now") + '</button></div>' +
       range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, 100, "%", "strength-field") +
       '<p class="field-help compact-help">' + t("设置100或更高可以让AI画图和手绘稿更一致；设置80或更低会让AI更有创造力；请随时根据需要来这里调整。", "Set 100 or higher to keep the AI image closer to your sketch; set 80 or lower to give the AI more creative freedom. Return here and adjust it whenever needed.") + '</p>' +
       '<div class="field-row">' + input("seed", t("随机种子", "Seed"), state.seed, "number", t("关闭锁定时由模型自动随机", "The model randomizes while unlocked")) + input("autoDelayMs", t("笔刷等待（毫秒）", "Brush wait (ms)"), state.autoDelayMs, "number") + '</div>' +
       '<label class="switch-row"><span><strong>' + t("锁定随机种子", "Lock random seed") + '</strong><small>' + t("开启后重复使用当前种子，便于稳定画风与构图", "Reuse the current seed for more consistent style and composition") + '</small></span><input class="toggle-switch" name="seedLocked" type="checkbox" role="switch"' + (state.seedLocked ? " checked" : "") + '></label>' +
       '<label class="switch-row"><span><strong>' + t("叠加生成", "Overlay generation") + '</strong><small>' + t("开启：提交画布当前真实显示的背景、成图和透明元素层；关闭：忽略成图，提交背景与完全不透明的元素层", "On: submit exactly what the canvas shows: background, result, and the translucent element layer. Off: omit the result and submit the background with a fully opaque element layer") + '</small></span><input class="toggle-switch" name="overlayGenerate" type="checkbox" role="switch"' + (state.overlayGenerate ? " checked" : "") + '></label>' });
     ranges(root);
+    // A Chinese prompt leaves for the model as English. Both fields therefore
+    // carry the English of the last translation, and a button to ask for one now:
+    // nothing is translated while typing, and nothing is asked for twice.
+    function promptField(name) { return root.querySelector('[name="' + name + '"]'); }
+    function paintEnglish() {
+      ["prompt", "negativePrompt"].forEach(function (name) {
+        var field = promptField(name), row = root.querySelector("#" + name + "-translate"), line = root.querySelector("#" + name + "-english");
+        var text = field.value.trim(), wanted = app.services.translate.hasCjk(text);
+        row.hidden = !wanted;
+        if (!wanted) { line.textContent = ""; return; }
+        line.textContent = app.services.translate.translated(text)
+          ? t("将提交英文：", "Submits: ") + app.services.translate.english(text)
+          : t("还没有英文译文,点「立即翻译」或直接应用", "No English yet. Tap Translate now, or just apply.");
+      });
+    }
+    function shortEnglish(text) { var value = app.services.translate.english(text); return value.length > 48 ? value.slice(0, 48) + "…" : value; }
+    root.querySelectorAll("[data-translate-now]").forEach(function (button) {
+      button.onclick = ui.action(async function () {
+        var field = promptField(button.getAttribute("data-translate-now")), text = field.value.trim();
+        if (!text || !app.services.translate.hasCjk(text)) { paintEnglish(); return; }
+        button.disabled = true; button.textContent = t("翻译中…", "Translating…");
+        await app.services.translate.translate([text]);
+        button.disabled = false; button.textContent = t("立即翻译", "Translate now");
+        paintEnglish();
+        // The service skips a text it has already translated, so the answer is read
+        // from the cache rather than from this one call's result.
+        if (app.services.translate.translated(text)) ui.toast(t("已译成英文：", "Translated: ") + shortEnglish(text));
+        else ui.toast(t("没能译成英文,请检查翻译服务后重试", "Could not translate. Check the translator and try again."), "error");
+      });
+    });
+    ["prompt", "negativePrompt"].forEach(function (name) { promptField(name).addEventListener("input", paintEnglish); });
+    paintEnglish();
     var seedField = root.querySelector('[name="seed"]'), seedLock = root.querySelector('[name="seedLocked"]');
     function syncSeedLock() {
       seedField.disabled = !seedLock.checked;
@@ -177,7 +297,17 @@
       var nextOverlayGenerate = root.querySelector('[name="overlayGenerate"]').checked;
       if (state.overlayGenerate !== nextOverlayGenerate) { state.resultOpacity = 0.66; state.layerOpacity = 0.66; }
       state.overlayGenerate = nextOverlayGenerate;
-      app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule(); app.events.emit("result:filter"); app.events.emit("work:settings"); ui.close(); ui.toast(t("作品设置已应用", "Artwork settings applied"));
+      app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule(); app.events.emit("result:filter"); app.events.emit("work:settings"); ui.close();
+      // Saving is what triggers the translation — never a keystroke, never a
+      // generation. A field that already holds a translation is not asked for
+      // again, so applying right after "Translate now" costs nothing.
+      var wanted = [state.prompt, state.negativePrompt].filter(function (value) { return app.services.translate.hasCjk(value); });
+      if (!wanted.length) { ui.toast(t("作品设置已应用", "Artwork settings applied")); return; }
+      var pending = wanted.filter(function (value) { return !app.services.translate.translated(value); });
+      if (pending.length) await app.services.translate.translate(pending);
+      var missing = wanted.filter(function (value) { return !app.services.translate.translated(value); });
+      if (missing.length) ui.toast(t("提示词没能译成英文,已按原文保存；请再点一次「应用」重试", "The prompt could not be translated and was saved as written. Tap Apply again to retry."), "error");
+      else ui.toast(t("已译成英文：", "Translated: ") + shortEnglish(wanted[0]));
     });
   }
   function parseColor(value) {
@@ -282,18 +412,61 @@
       await app.services.store.saveConfig(next); app.i18n.theme(); app.i18n.dom(); app.events.emit("preferences:changed"); ui.close(); ui.toast(t("软件设置已保存", "Preferences saved"));
     });
   }
+  // The repository this happ is developed in. The about sheet links straight to it, and
+  // the link must stay a same-frame navigation: the app WebView has no window handler, so
+  // target="_blank" would silently do nothing, while a same-frame jump to another origin
+  // is exactly what the host turns into the system browser.
+  var PROJECT_URL = "https://github.com/zhyuzh3d/vibedraw";
+  function glyph(style, name) { return '<i class="' + style + ' fa-' + name + '" aria-hidden="true"></i>'; }
+  // One help line = the tool's own icon, its name, and one sentence. The icon is the
+  // point: it lets the sheet be read as a map of the toolbars instead of as prose.
+  function helpLine(inner, title, detail) {
+    return '<div class="help-line"><span class="help-icon" aria-hidden="true">' + inner + '</span><div><strong>' + title + '</strong><p>' + detail + '</p></div></div>';
+  }
+  function helpSection(title, rows) { return "<h3>" + title + '</h3><div class="help-list">' + rows.join("") + "</div>"; }
   function help() {
-    ui.open({ title: t("使用说明", "How to draw"), html: '<div class="help-copy"><h3>' + t("从草图到成图", "From sketch to artwork") + '</h3><ol><li>' +
-      t("在顶部写下画面描述，使用铅笔勾轮廓、涂色笔铺色；图片工具可以导入参考图。", "Describe your idea above the canvas. Draw outlines with Pencil, add color with Brush, or import a reference image.") + '</li><li>' +
-      t("先在右上角菜单配置模型。自动模式会在落笔后等待片刻再生成；生成期间可以继续画，最新画面会排队。", "Configure models in the menu. Auto mode waits briefly after a stroke. Keep drawing while a request runs; the latest sketch is queued.") + '</li><li>' +
-      t("叠加生成关闭时，画布上方滑竿调整顶层成图透明度；开启后成图移到元素下方，滑竿改为调整元素层透明度。绘制稿强度在作品设置中统一调整。", "With overlay generation off, the slider above the canvas controls the top result layer. Turn overlay on to move the result below the elements and use the slider for element-layer opacity. Adjust shared sketch preservation in Artwork settings.") + '</li><li>' +
-      t("作品会自动保存在历史中。打开历史可继续编辑或复制作品；新建时会先保存当前作品。", "Artwork is saved automatically. Continue or duplicate it from Your artwork. Creating a new work saves the current one first.") + '</li></ol><h3>' +
-      t("局部与选择", "Mask & selection") + '</h3><p>' +       t("局部工具用粉色标记重绘区域，可用 CVP 插件、OpenAI Images 和 SD WebUI 接口重绘。选择模式下，轻点元素会单选；从空白处拖出选择框，碰到的元素都会被选中。直接拖动单个元素只移动它，框选后再拖动选区内的元素或空隙会整体移动；点击成组后，轻点或框到组内任一元素都会选中整组。四角手柄与双指捏合用于等比缩放。", "The pink mask marks the area to repaint; the CVP plugin, OpenAI Images and SD WebUI can all use it. In Select mode, tap an element to select only it, or drag a box from empty space; every touched element is selected. Drag one element to move only it; after a box selection, drag an element or empty space inside the selection to move the selection. After grouping, tapping or touching any member with the selection box selects the whole group. Use corner handles or a two-finger pinch to scale proportionally.") + '</p><h3>' +
-      t("连接自己的模型", "Connect your model") + '</h3><p>' + t("三个任务各自独立配置：快速生图、局部重绘、高清渲染。推荐在本地 ComfyUI 上安装 VibeDraw 插件（CVP），它自带这三套工作流，并推荐使用 DreamShaper8 LCM —— 512 × 512 低步数下约一秒成图，且参考图权重可调。访问密码在插件的配置节点里设置，密码错误不会出图。局域网地址支持 HTTP，公网需要 HTTPS。", "Configure the three tasks independently: quick draw, local redraw and render. Install the VibeDraw plugin (CVP) on a local ComfyUI; it ships all three workflows, and DreamShaper8 LCM is recommended: about a second at 512 × 512 with few steps, with an adjustable reference weight. Set the access password in the plugin's config node; a wrong password produces no image. LAN HTTP is supported, public services need HTTPS.") + '</p><h3>' +
-      t("保存与导出", "Save & export") + '</h3><p>' + t("下载按钮保存当前画布的实际显示效果；渲染完成后会打开全屏大图预览，可双指缩放、拖动查看并单独下载 1024 大图。停止等待只忽略本次结果，不保证服务端取消或停止计费。", "Download saves the canvas exactly as displayed. Render opens a fullscreen image viewer with pinch zoom, panning, and a separate 1024 image download. Dismiss ignores a result; it does not guarantee server cancellation or stop billing.") + '</p></div>' });
+    var fa = glyph, line = helpLine;
+    ui.open({ title: t("使用说明", "How to draw"), html: '<div class="help-copy">' +
+      helpSection(t("快速上手", "Quick start"), [
+        line(fa("fa-solid", "gear"), t("① 写提示词（中英文都行）", "1 · Describe it"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,中英文都行:中文会自动译成英文再出图,只写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. Chinese or English both work: Chinese is translated into English for the model, and an English prompt is submitted exactly as written. The more specific, the better.")),
+        line(fa("fa-solid", "pencil"), t("② 自由绘制", "2 · Draw freely"), t("铅笔勾轮廓，涂色铺色，也可以用「图片」导入参考。", "Sketch with Pencil, color with Brush, or import a reference with Image.")),
+        line(fa("fa-solid", "wand-magic-sparkles") + fa("fa-solid", "dice"), t("③ 快速生成 / 随机创意", "3 · Fast or roll a seed"), t("点「快速」出实时预览；点骰子换一个随机数再生一次，换个构图。", "Tap Fast for a live preview, or the dice to roll a seed and generate again for a different take.")),
+        line(fa("fa-regular", "gem"), t("④ 渲染大图", "4 · Render"), t("点「渲染」得到 1024 高清图；画布右下角钻石可全屏查看、单独下载。", "Tap Render for a 1024 image; the diamond on the canvas opens it fullscreen with its own download."))
+      ]) +
+      helpSection(t("作品设置", "Artwork settings"), [
+        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,中英文都行:写中文时下面自动显示上一次的英文译文,点「立即翻译」可马上译一遍,没改就不用重复译；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid, in Chinese or English — with Chinese it shows the last English translation and offers Translate now, and an unchanged prompt is never translated twice. Local redraw keeps its own separate description.")),
+        line(fa("fa-regular", "image"), t("图像权重（重点）", "Image weight (key)"), t("提示条上的滑竿：80% 为中性；调高更贴手绘稿，调低模型更自由。点左边的图片图标一键回到 80%。作品设置里的「绘制稿保留强度」就是这个值。", "The slider on the prompt bar: 80% is neutral. Higher sticks closer to your sketch, lower frees the model. The image icon on its left snaps back to 80%. Artwork settings exposes the same value as Sketch preservation."))
+      ]) +
+      helpSection(t("画布工具栏", "Canvas toolbar"), [
+        line(fa("fa-solid", "expand"), t("全屏画布（重点）", "Fullscreen (key)"), t("画布铺满屏幕，绘制与选择都更宽裕；全屏后底部小箭头可收起工具条。", "The canvas fills the screen for more drawing and selection room; the small arrow below collapses the toolbars.")),
+        line(fa("fa-solid", "palette"), t("调色（重点）", "Color (key)"), t("亮度、对比度、饱和度、色相、梦幻辉光、清晰度实时预览；「设为默认」记住这套效果。", "Brightness, contrast, saturation, hue, dream glow and sharpness, previewed live. Save default keeps the set.")),
+        line(fa("fa-solid", "eye"), t("成图层", "Result layer"), t("眼睛隐藏或显示成图，右侧滑竿调成图透明度，不动草稿元素。", "The eye hides or shows the result; the slider beside it sets result opacity without touching your elements.")),
+        line(fa("fa-solid", "rotate-left") + fa("fa-solid", "rotate-right"), t("撤销 / 重做", "Undo / redo"), t("成图切换也进撤销栈，最多回退 120 张。", "Result changes join the undo journal too, up to 120 steps back."))
+      ]) +
+      helpSection(t("工具箱", "Toolbox"), [
+        line(fa("fa-solid", "arrow-pointer"), t("选择（重点）", "Select (key)"), t("轻点单选；从空白处拖出选框可多选。拖单个元素只移动它，框选后拖动区内任意位置整体移动；四角手柄或双指捏合等比缩放。", "Tap to select one; drag a box from empty space to select several. Dragging one element moves only it; after a box selection, drag anywhere inside to move the whole selection. Corner handles or a two-finger pinch scale proportionally.")),
+        line(fa("fa-solid", "object-group") + fa("fa-solid", "object-ungroup"), t("成组（重点）", "Group (key)"), t("选中多个后「成组」，之后轻点组内任一元素即选中整组；「取消成组」可拆开。", "Group several selected objects, then tapping any member selects the whole group. Ungroup splits it again.")),
+        line(fa("fa-solid", "minus") + fa("fa-solid", "plus"), t("放缩（重点）", "Scale (key)"), t("「放大 / 缩小」等比缩放所选对象，与四角手柄、双指捏合同一效果。", "Enlarge and Shrink scale the selection proportionally, same as the corner handles and a two-finger pinch.")),
+        line(fa("fa-solid", "pencil") + fa("fa-solid", "paintbrush") + fa("fa-solid", "eraser") + fa("fa-regular", "image"), t("绘制与图片", "Draw & image"), t("铅笔勾线、涂色铺色，粗细与透明度在同一行调；擦除擦掉元素内容；图片导入参考图。", "Pencil sketches, Brush fills; size and opacity sit on the same row. Eraser removes element content; Image imports a reference.")),
+        line(fa("fa-solid", "mask-face") + fa("fa-solid", "keyboard"), t("局部重绘（重点）", "Local redraw (key)"), t("① 用「局部」涂红要改的区域 → ② 点键盘图标写这块要改成什么 → ③ 点「快速」生成。只提交这句局部描述。", "Mark the area red with Mask, write what it should become with the keyboard icon, then tap Fast. Only that local description is submitted.")),
+        line(fa("fa-solid", "eraser"), t("清除标记", "Clear marks"), t("局部模式下出现，擦掉全部红色标记重新开始。", "Appears in local mode to wipe every red mark and start over."))
+      ]) +
+      helpSection(t("生图工具栏", "Generation bar"), [
+        line(fa("fa-solid", "bolt"), t("自动 / 手动", "Auto / Manual"), t("按钮开着叫「自动」，关掉叫「手动」；开着时落笔停一会儿自动调用快速模型。", "The button reads Auto when it is on and Manual when it is off; while on, a quick model runs by itself a moment after you stop drawing.")),
+        line(fa("fa-solid", "wand-magic-sparkles"), t("快速", "Fast"), t("用实时模型按当前画面生成预览。", "Generates a preview of the current picture with the realtime model.")),
+        line(fa("fa-solid", "dice"), t("骰子", "Dice"), t("换一个随机数并立刻快速生成一次，用来试构图。", "Rolls a new seed and runs Fast immediately, for trying a different composition.")),
+        line(fa("fa-regular", "gem"), t("渲染", "Render"), t("把当前实际画面交给高质量模型，输出 1024 大图。", "Sends the visible canvas to the high-quality model for a 1024 render.")),
+        line('<span class="mini-switch"></span>', t("叠加生成", "Overlay"), t("开启：成图移到元素下方，并作为下一次参考的一部分。", "On: the result drops below your elements and joins the next reference.")),
+        line(fa("fa-solid", "camera"), t("快照", "Snapshot"), t("把当前显示效果压平成一张可编辑图片元素。", "Flattens what is on screen into one editable image element.")),
+        line(fa("fa-solid", "download"), t("下载", "Download"), t("保存当前画布的实际显示效果。", "Saves the canvas exactly as displayed."))
+      ]) +
+      helpSection(t("模型", "Models"), [
+        line(fa("fa-solid", "cubes"), t("接上自己的模型", "Connect a model"), t("菜单里的「模型配置」按快速生图 / 局部重绘 / 高清渲染分三套，共享同一套地址与密码。推荐在本地 ComfyUI 装 VibeDraw 插件（CVP），密码在插件的配置节点里设置。", "Models are set per task: quick draw, local redraw and render, sharing one address and password. Installing the VibeDraw plugin (CVP) on a local ComfyUI is recommended; set its password in the plugin's config node."))
+      ]) +
+      '</div>' });
   }
   function about() {
-    ui.open({ mode: "center", title: t("软件信息", "About VibeDraw"), html: '<div class="about-brand"><span class="brand-mark">V</span><div><strong>VibeDraw</strong><div class="about-meta">v' + app.version + ' · MIT</div></div></div><p>' + t("画下灵感，与 AI 一起完成。", "Sketch an idea. Create with AI.") + '</p><p class="about-meta">' + t("原生 HTML / CSS / JavaScript 开源 happ。模型由你选择，作品保存在当前应用。", "An open-source HTML / CSS / JavaScript happ. Your models, your artwork, stored in this app.") + '</p><p class="about-meta">© 2026 zhyuzh · Font Awesome Free (Hermit)</p>' });
+    ui.open({ mode: "center", title: t("软件信息", "About VibeDraw"), html: '<div class="about-brand"><span class="brand-mark">V</span><div><strong>VibeDraw</strong><div class="about-meta">v' + app.version + ' · MIT</div></div></div><p>' + t("画下灵感，与 AI 一起完成。", "Sketch an idea. Create with AI.") + '</p><p class="about-meta">' + t("原生 HTML / CSS / JavaScript 开源 happ。模型由你选择，作品保存在当前应用。", "An open-source HTML / CSS / JavaScript happ. Your models, your artwork, stored in this app.") + '</p><a class="button button-secondary about-link" href="' + PROJECT_URL + '">' + glyph("fa-brands", "github") + t("GitHub 项目", "GitHub project") + '</a><p class="about-meta">© 2026 zhyuzh · Font Awesome Free (Hermit)</p>' });
   }
   app.components.settings = { init: init, open: open, openColor: openColor };
 })(window.vibedraw);

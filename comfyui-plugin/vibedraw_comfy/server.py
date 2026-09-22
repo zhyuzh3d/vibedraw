@@ -8,6 +8,7 @@ developer's tool) talks to.  Everything the client needs is discoverable:
     GET  /vibedraw/v1/jobs/{id}                 poll state, progress, outputs
     GET  /vibedraw/v1/jobs/{id}/output/{index}  fetch a finished image
     POST /vibedraw/v1/jobs/{id}/cancel          drop a queued job
+    POST /vibedraw/v1/translate                 turn Chinese prompts into English
 
 Authentication
 --------------
@@ -20,6 +21,15 @@ unauthorized`` and nothing is queued.  Leaving it empty disables the check and
 Images are uploaded inline as base64 in the job body and are written into
 ``input/vibedraw/`` before the graph runs, so a built-in graph can reference
 them through the ordinary ``LoadImage`` node.
+
+Translation
+-----------
+No checkpoint here pairs with a Chinese-capable text encoder, and translation is
+deliberately not part of submitting a job: a job is submitted exactly as it
+arrives.  ``/vibedraw/v1/translate`` is the one trigger, and the client calls it
+when a prompt is saved, so what travels with a job is already English.  Text
+without a CJK character is never sent anywhere, which is what makes an
+all-English prompt pass through untouched.
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ import folder_paths
 from aiohttp import web
 
 from . import settings as settings_module
+from . import translate as translate_module
 from . import workflows
 
 API_ROOT = "/vibedraw/v1"
@@ -462,6 +473,7 @@ async def capabilities(request: web.Request) -> web.Response:
                 "hint": "密码在 ComfyUI 的 VibeDraw 配置节点里设置。",
             },
             "limits": {"max_body_bytes": MAX_BODY_BYTES, "max_pending_jobs": MAX_PENDING_JOBS},
+            "translate": translate_module.describe(),
             "checkpoints": _available_checkpoints(),
         }
     )
@@ -655,6 +667,31 @@ async def cancel_job(request: web.Request) -> web.Response:
     return _json({"job": _describe(job, running, pending, _history_entry(job_id))})
 
 
+async def translate_prompts(request: web.Request) -> web.Response:
+    """Turn Chinese prompts into English so a client can show and store both.
+
+    A text without a CJK character comes back untouched, and so does every text
+    when the translator is off or unreachable — the caller decides what to do,
+    it never has to handle an error, and a job submitted afterwards is still
+    translated by ``create_job`` if it needs to be.
+    """
+    if not _authorized(request):
+        return _fail("unauthorized")
+    try:
+        body = await request.json()
+    except Exception:
+        return _fail("bad_request")
+    if not isinstance(body, dict):
+        return _fail("bad_request")
+    raw = body.get("texts")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        return _fail("bad_request")
+    outcome = await translate_module.translate([item for item in raw], target=str(body.get("target") or "en"))
+    return _json(outcome)
+
+
 def register_routes() -> bool:
     """Attach the API to the running ComfyUI server; safe to call once at import."""
     server = _prompt_server()
@@ -674,6 +711,7 @@ def register_routes() -> bool:
     routes.get(f"{API_ROOT}/jobs/{{job_id}}")(job_status)
     routes.get(f"{API_ROOT}/jobs/{{job_id}}/output/{{index}}")(job_output)
     routes.post(f"{API_ROOT}/jobs/{{job_id}}/cancel")(cancel_job)
+    routes.post(f"{API_ROOT}/translate")(translate_prompts)
     return True
 
 

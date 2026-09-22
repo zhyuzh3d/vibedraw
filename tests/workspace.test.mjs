@@ -44,7 +44,7 @@ legacyConfig.quality = {
 Object.assign(legacyConfig.quick, { protocol: "a1x-flux", endpoint: "http://192.168.124.31:8188", apiKey: "kept-secret", width: 256, height: 256, steps: 1, model: "flux2_klein_4b_distilled_nvfp4" });
 records.set("config", { value: legacyConfig, revision: "seed-config" });
 await store.loadConfig();
-assert.equal(app.config.schema, 7);
+assert.equal(app.config.schema, 8);
 assert.equal(app.config.quick.protocol, "cvp", "a retired A1X slot must become a CVP slot");
 assert.equal(app.config.quick.width, 512);
 assert.equal(app.config.quick.steps, 8, "a retired slot must fall back to the CVP step default");
@@ -60,10 +60,31 @@ assert.equal(app.config.inpaint.endpoint, "http://192.168.124.31:8188", "local r
 assert.equal(Object.prototype.hasOwnProperty.call(app.config, "quality"), false, "the retired quality slot must not survive migration");
 assert.equal(Object.prototype.hasOwnProperty.call(app.config.canvas, "overlayGenerate"), false, "overlay generation is an artwork setting and must not become a global default");
 assert.equal(app.config.quick.apiKey, "kept-secret", "migration must preserve the saved credential");
+// Schema 8 keeps one CVP connection for all three tasks: the address a configured
+// task already had becomes that connection, and every CVP task follows it.
+assert.equal(app.config.connection.endpoint, "http://192.168.124.31:8188", "a configured CVP task must donate its address to the shared connection");
+assert.equal(app.config.connection.apiKey, "kept-secret", "the shared connection must carry the saved password");
+["quick", "inpaint", "upscale"].forEach(name => {
+  assert.equal(app.config[name].endpoint, app.config.connection.endpoint, name + " must read the shared CVP address");
+  assert.equal(app.config[name].apiKey, app.config.connection.apiKey, name + " must read the shared CVP password");
+});
+const shared = await store.saveConfig({ ...app.config, connection: { endpoint: "http://10.0.0.5:8188", apiKey: "one", customHeaders: "" } });
+["quick", "inpaint", "upscale"].forEach(name => {
+  assert.equal(shared[name].endpoint, "http://10.0.0.5:8188", name + " must follow an edited shared address");
+  assert.equal(shared[name].apiKey, "one", name + " must follow an edited shared password");
+});
+assert.equal(shared.connection.endpoint, "http://10.0.0.5:8188", "the saved config must keep the shared connection itself");
+const mixed = await store.saveConfig({ ...shared, quick: { ...shared.quick, protocol: "openai-images", endpoint: "https://api.example.com" }, connection: shared.connection });
+assert.equal(mixed.quick.endpoint, "https://api.example.com", "a non-CVP task must keep its own address");
+assert.equal(mixed.inpaint.endpoint, "http://10.0.0.5:8188", "a non-CVP task must not disturb the shared CVP connection");
 Object.assign(app.state, {
   prompt: "Original", objects: [{ id: "stroke-1", type: "stroke", points: Array.from({ length: 5000 }, (_, index) => ({ x: index % 768, y: Math.floor(index / 8) % 768 })) }, { id: "image-1", type: "image", src: "data:image/png;base64,abc", url: "data:image/png;base64,abc" }],
   autoDelayMs: 1320, strength: 1.35, colorStrength: 0.47, resultOpacity: 0.42, layerOpacity: 0.37, resultVisible: false, overlayGenerate: true, seed: 73, seedLocked: true, resultGlow: 38, resultClarity: 24, resultAdjustmentsEnabled: false,
-  result: { src: "data:image/png;base64,result", slot: "quick", createdAt: 1, metadata: { data: "never persist" } }
+  result: { src: "data:image/png;base64,result", slot: "quick", createdAt: 1, metadata: { data: "never persist" } },
+  // The undo journal is in-memory only: an older image held by a step must never
+  // reach a Hermit record.
+  renderResult: { src: "data:image/png;base64,render", slot: "upscale", createdAt: 2, metadata: { data: "never persist" } },
+  history: [{ objects: [], background: "#ffffff", result: { src: "data:image/png;base64,undone", slot: "quick", createdAt: 0 } }], future: []
 });
 await store.flush();
 const originalId = app.state.workId;
@@ -77,6 +98,10 @@ const saved = await store.get(originalId);
 assert.equal(saved.objects.length, 2);
 assert.equal(JSON.stringify(saved).includes("data:image"), false, "binary image data must never enter records");
 assert.equal("metadata" in saved.result, false);
+assert.equal(saved.render.slot, "upscale", "the last render must be stored with the artwork");
+assert.equal("metadata" in saved.render, false);
+assert.equal("history" in saved, false, "the undo journal must never be persisted with the artwork");
+assert.equal("future" in saved, false, "the redo stack must never be persisted with the artwork");
 assert.equal(saved.autoDelayMs, 1320, "brush wait must be stored with the artwork");
 assert.equal(saved.strength, 1.35, "shared sketch strength must be stored with the artwork");
 assert.equal(saved.colorStrength, 0.47, "A1X LCM color strength must be stored with the artwork");
@@ -142,6 +167,7 @@ app.components.canvas = {
 };
 app.services.providers = { generate: (config, input) => { generationConfigs.push(config); inputs.push(input); return new Promise(resolve => pending.push(resolve)); } };
 app.services.store.scheduleCanvasSave = () => {};
+load("app/services/translate.js");
 load("app/services/image-engine.js");
 app.services.imageEngine.init(app.components.canvas);
 await assert.rejects(() => app.services.imageEngine.internals.withDeadline(new Promise(() => {}), 5), /生成等待超时/);
@@ -202,4 +228,39 @@ assert.equal(generationConfigs.at(-1).width, 1024); assert.equal(generationConfi
 assert.equal(inputs.at(-1).maskDataUrl, null); assert.equal(inputs.at(-1).openAiMaskDataUrl, null);
 pending.shift()({ src: "render-1024" }); await render;
 assert.equal(events.at(-1).slot, "upscale", "a validated render must be delivered as the upscale result");
-console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue)");
+// No checkpoint here carries a text encoder that reads Chinese, so the string
+// that leaves is the English of the last saved prompt. The cache is a lookup:
+// this path never asks the translator for anything, and an English prompt is
+// handed over exactly as the user wrote it.
+Object.assign(app.config.quick, { endpoint: "http://192.168.1.2:8188", protocol: "cvp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 8 });
+const translate = app.services.translate;
+assert.ok(translate.hasCjk("一只蓝色的水晶鸟") && !translate.hasCjk("a fox in snow"), "only a prompt with CJK characters needs a translation");
+translate.internals.cache["一只蓝色的水晶鸟"] = "a blue crystal bird";
+translate.internals.cache["模糊、变形"] = "blurry, distorted";
+app.state.prompt = "一只蓝色的水晶鸟"; app.state.negativePrompt = "模糊、变形";
+const translatedRun = app.services.imageEngine.run("quick", false);
+await new Promise(resolve => setTimeout(resolve, 5));
+assert.equal(inputs.at(-1).prompt, "a blue crystal bird", "a Chinese prompt must be submitted as the English of its last translation");
+assert.equal(inputs.at(-1).negativePrompt, "blurry, distorted", "the negative prompt must be translated as well");
+pending.shift()({ src: "translated" }); await translatedRun;
+app.state.prompt = "a fox in snow"; app.state.negativePrompt = "";
+const englishRun = app.services.imageEngine.run("quick", false);
+await new Promise(resolve => setTimeout(resolve, 5));
+assert.equal(inputs.at(-1).prompt, "a fox in snow", "an English prompt must be submitted verbatim, never reworded");
+pending.shift()({ src: "english" }); await englishRun;
+const toasts = [];
+app.components.ui = { toast: (message, type) => toasts.push([String(message), String(type || "")]) };
+app.state.prompt = "一只还没译过的猫";
+const untranslatedRun = app.services.imageEngine.run("quick", false);
+await new Promise(resolve => setTimeout(resolve, 5));
+assert.equal(inputs.at(-1).prompt, "一只还没译过的猫", "an untranslated prompt must still submit instead of blocking the user");
+assert.equal(toasts.length, 1, "every drawing with Chinese in its prompt must warn once");
+assert.match(toasts[0][0], /提示词只能使用英文,请检查翻译大模型设置/, "the warning must name the English-only rule and the settings that fix it");
+assert.equal(toasts[0][1], "error", "the warning must be the error style rather than the success check mark");
+pending.shift()({ src: "untranslated" }); await untranslatedRun;
+app.state.prompt = "a fox again";
+const quietRun = app.services.imageEngine.run("quick", false);
+await new Promise(resolve => setTimeout(resolve, 5));
+assert.equal(toasts.length, 1, "a drawing with an English prompt must not warn at all");
+pending.shift()({ src: "quiet" }); await quietRun;
+console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue, prompt translation)");

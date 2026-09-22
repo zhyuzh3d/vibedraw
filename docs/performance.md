@@ -34,7 +34,7 @@ vibedraw.components.canvas.performance()
 vibedraw.services.assets.performance()
 ```
 
-前者返回帧数、内容层重建次数、累计绘制对象数、图片缓存和撤销栈规模；后者返回资产缓存与正在进行的图片任务数。
+前者返回帧数、内容层重建次数、累计绘制对象数、图片缓存、撤销步数上限和撤销栈规模；后者返回资产缓存与正在进行的图片任务数。
 
 运行回归检查与可重复基准：
 

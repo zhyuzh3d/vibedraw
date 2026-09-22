@@ -20,6 +20,9 @@ const settingsJs = fs.readFileSync(path.join(root, "app/components/settings.js")
 const storeJs = fs.readFileSync(path.join(root, "app/services/store.js"), "utf8");
 const uiJs = fs.readFileSync(path.join(root, "app/components/ui.js"), "utf8");
 const imageEngineJs = fs.readFileSync(path.join(root, "app/services/image-engine.js"), "utf8");
+const translateJs = fs.readFileSync(path.join(root, "app/services/translate.js"), "utf8");
+const appJs = fs.readFileSync(path.join(root, "app/app.js"), "utf8");
+const assetsJs = fs.readFileSync(path.join(root, "app/services/assets.js"), "utf8");
 const providersJs = fs.readFileSync(path.join(root, "app/services/providers.js"), "utf8");
 const hermitJs = fs.readFileSync(path.join(root, "app/platform/hermit.js"), "utf8");
 const renderPreviewJs = fs.readFileSync(path.join(root, "app/components/render-preview.js"), "utf8");
@@ -43,7 +46,9 @@ assert.ok(/id="generate-quality"[\s\S]*data-zh="渲染"/.test(html), "quality ac
 assert.ok(html.includes('id="render-preview"') && html.includes('id="render-preview-surface"') && html.includes('id="render-preview-adjust"') && html.includes('id="render-preview-adjustments"') && html.includes('id="render-preview-download"') && html.includes('id="render-preview-reset"') && html.includes('id="render-preview-clear"') && html.includes('id="render-preview-close"') && html.includes('id="render-preview-stage"') && html.includes('role="toolbar"'), "Render must have a fullscreen preview toolbox, adjustment panel, and image stage");
 assert.equal((html.match(/data-render-adjust="result/g) || []).length, 6, "Render preview must expose six live color adjustment sliders");
 assert.ok(html.includes('id="render-preview-adjust-close"') && html.includes('id="render-preview-adjust-reset"') && html.includes('id="render-preview-adjust-default"'), "Render preview adjustments must expose close, reset, and save-default actions");
-assert.ok(html.includes('id="prompt-display"') && html.includes('id="prompt-strength"') && html.includes('id="prompt-strength-default"') && html.includes('id="prompt-strength-value"') && html.includes('min="40" max="120"'), "Main prompt row must expose the bounded image weight control, its percentage, and 80% shortcut");
+assert.ok(html.includes('id="prompt-display"') && html.includes('id="prompt-strength"') && html.includes('id="prompt-strength-default"') && html.includes('id="prompt-strength-value"') && html.includes('min="20" max="100"'), "Main prompt row must expose the image weight control bounded to 20-100%, its percentage, and the 80% shortcut");
+assert.ok(editorJs.includes("var value = Math.max(20, Math.min(100, Math.round(Number(app.state.strength || 0.8) * 100)))") && editorJs.includes("value = Math.max(20, Math.min(100, Number(value) || 80)"), "the image weight control and its setter must share the 20-100% range declared by the markup");
+assert.ok(componentsCss.includes(".advanced summary:focus{outline:none!important}") && !componentsCss.includes(".advanced summary:focus,.advanced summary:focus-visible"), "the summary focus rule must stay split: an unsupported selector listed beside :focus makes an old WebView drop the whole rule and draw the UA focus ring");
 assert.ok(html.indexOf('id="render-preview-adjust-default"') < html.indexOf('id="render-preview-adjust-reset"') && html.indexOf('id="render-preview-adjust-reset"') < html.indexOf('id="render-preview-adjust-close"'), "Render preview adjustment actions must be save-default, reset, close");
 assert.ok(!html.includes('id="render-preview-title"') && !html.includes('id="render-preview-meta"') && !html.includes('render-preview-footer'), "Render preview must not show title, resolution, or footer text");
 assert.ok(html.includes('id="render-result-trigger"') && !html.includes('id="render-notice"'), "Render result must use only the animated diamond trigger");
@@ -64,7 +69,35 @@ assert.ok(!settingsJs.includes("app.config.quality"), "the retired quality slot 
 assert.match(componentsCss, /\.advanced summary:focus[^{]*\{outline:none/, "the advanced-options summary must not draw a focus ring");
 assert.ok(!providersJs.includes("a1x") && !providersJs.includes("A1X"), "the A1X protocol implementation must be deleted from the provider layer, not just hidden from the menu");
 assert.ok(providersJs.includes('name: "ComfyUI Vibedraw Plugin'), "the CVP format must be presented under its full ComfyUI Vibedraw Plugin name");
-assert.ok(storeJs.includes("value.upscale = app.utils.merge") && storeJs.includes("value.inpaint = app.utils.merge") && storeJs.includes("value.schema = 7") && storeJs.includes('model.protocol === "a1x-image"') && storeJs.includes('model.protocol = "cvp"'), "schema 7 must split the two-model setup into the three tasks and fold the retired A1X and workflow formats into CVP");
+assert.ok(storeJs.includes("value.upscale = app.utils.merge") && storeJs.includes("value.inpaint = app.utils.merge") && storeJs.includes("value.schema = 8") && storeJs.includes('model.protocol === "a1x-image"') && storeJs.includes('model.protocol = "cvp"'), "schema 8 must split the two-model setup into the three tasks and fold the retired A1X and workflow formats into CVP");
+assert.ok(storeJs.includes("function shareCvpConnection") && storeJs.includes('["quick", "inpaint", "upscale"].forEach') && storeJs.includes("model.endpoint = connection.endpoint") && storeJs.includes("var value = shareCvpConnection(app.utils.merge(app.defaults, config))"), "one CVP connection must be re-derived into every CVP task on load and on save, so editing it anywhere edits all three");
+assert.ok(settingsJs.includes("var shared = draft.connection") && settingsJs.includes('var sharedField = cvp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0') && settingsJs.includes("if (sharedField) shared[field.name] = value"), "the model dialog must read and write the one shared CVP connection while leaving the other formats alone");
+assert.ok(settingsJs.includes("data-plugin-download") && settingsJs.includes("async function downloadPlugin") && settingsJs.includes("bridge.files.beginWrite(") && settingsJs.includes("bridge.files.appendBytes(") && settingsJs.includes("bridge.files.finishWrite(") && settingsJs.includes("bridge.files.export(") && settingsJs.includes('root.querySelector("[data-plugin-download]")') && settingsJs.includes("pluginButton.onclick = ui.action(downloadPlugin)"), "the CVP form must offer the bundled plugin through the host file writer and the system save dialog, not a download");
+assert.ok(html.includes('src="./app/assets/comfyui-plugin.js"'), "the bundled plugin bytes must be part of the runtime script list");
+const pluginBundleJs = fs.readFileSync(path.join(root, "app/assets/comfyui-plugin.js"), "utf8");
+assert.ok(/app\.comfyuiPlugin = \{[\s\S]*name: "vibedraw-comfyui-plugin-v[0-9.]+\.zip"[\s\S]*base64:/.test(pluginBundleJs), "the generated asset must expose the archive name and its bytes");
+assert.ok(pluginBundleJs.length > 20000 && !/\b(?:import|export)\s/.test(pluginBundleJs), "the embedded archive must carry real bytes and stay a plain script");
+assert.ok(settingsJs.includes("function helpLine") && settingsJs.includes("function helpSection") && settingsJs.includes('class="help-icon"') && componentsCss.includes(".help-icon{box-sizing:border-box;flex:0 0 auto"), "every help line must lead with the tool's own icon");
+// The sheet is a map of the toolbars, so the icons it prints must be the icons the
+// toolbars paint. Asserting a few of them keeps a rewrite from quietly dropping them.
+["pencil", "wand-magic-sparkles", "dice", "gear", "keyboard", "expand", "palette", "arrow-pointer", "object-group", "minus", "mask-face", "bolt", "camera", "download", "cubes"].forEach((name) => {
+  assert.ok(settingsJs.includes('fa("fa-solid", "' + name + '")') || settingsJs.includes('fa("fa-regular", "' + name + '")'), "the help sheet must show the " + name + " icon");
+});
+assert.ok(settingsJs.includes('fa("fa-regular", "image")') && settingsJs.includes('fa("fa-regular", "gem")'), "the help sheet must show the image-weight and render icons in their regular cut");
+// The whole point of the sheet is that a reader can find the button on screen, so no
+// icon may be invented. Read every glyph the help body names and require the markup to
+// actually paint it — the sheet once advertised pen-to-square, which no toolbar has.
+{
+  const helpBody = settingsJs.slice(settingsJs.indexOf("function help("), settingsJs.indexOf("function about("));
+  const named = [...helpBody.matchAll(/fa\("fa-(?:solid|regular)", "([a-z0-9-]+)"\)/g)].map((match) => match[1]);
+  assert.ok(named.length >= 15, "the help sheet must name the toolbar icons it explains");
+  const invented = [...new Set(named)].filter((name) => !html.includes("fa-" + name));
+  assert.equal(invented.join(","), "", "every icon the help sheet shows must exist in the markup: " + invented.join(", "));
+  assert.ok(!helpBody.includes("pen-to-square"), "the prompt is edited in Artwork settings, so the sheet must not advertise a pen-to-square button that does not exist");
+}
+assert.ok(settingsJs.includes('<span class="mini-switch"></span>') && !/<ol>/.test(settingsJs.slice(settingsJs.indexOf("function help("), settingsJs.indexOf("function about("))), "the overlay switch must be shown as the real control, and the help must stay a list of short lines rather than prose paragraphs");
+assert.ok(settingsJs.includes('var PROJECT_URL = "https://github.com/zhyuzh3d/vibedraw"') && settingsJs.includes('class="button button-secondary about-link" href="\' + PROJECT_URL + \'"') && !/<a [^>]*target=/.test(settingsJs), "the about sheet must link to the project in the same frame: this WebView has no window handler for a new tab");
+assert.ok(componentsCss.includes(".about-link{width:100%;margin-top:16px;text-decoration:none}"), "the project link must read as a full-width button");
 assert.ok(hermitJs.includes("var MESSAGE_CHARS = 200000") && hermitJs.includes("function checkBudget") && hermitJs.includes("checkBudget(options)") && hermitJs.includes("messageChars: MESSAGE_CHARS"), "the platform layer must keep every inline body inside the host message budget and expose that budget");
 assert.ok(imageEngineJs.includes("mime: \"image/jpeg\"") && imageEngineJs.includes("maxBytes: Math.max(40000, (app.platform.hermit.messageChars || 200000) - reserved)") && imageEngineJs.includes("String(maskDataUrl || openAiMaskDataUrl || \"\").length + 8000"), "the reference image must be a budgeted JPEG that leaves room for the mask and the RPC envelope");
 assert.ok(canvasJs.includes("async function composeWithinBudget") && canvasJs.includes("encoded.length > maxBytes") && canvasJs.includes("composeWithinBudget(composition, targetSize, options.withResult === true, options)"), "the canvas must step the reference size down until it fits the budget instead of relying on JPEG quality alone");
@@ -97,7 +130,32 @@ assert.match(editorCss, /\.draw-options\.is-mask \.local-prompt-options\{flex:1 
 assert.ok(imageEngineJs.includes('masking && (requested === "quick" || !requested) ? "inpaint"') && imageEngineJs.includes("canvasInput.composeMask(false)") && !imageEngineJs.includes('slot !== "quality" && canvasInput.hasMask()'), "an active mask must switch quick draw to the local-redraw task and submit the mask");
 assert.ok(editorJs.includes("node(\"auto-toggle\").disabled = masking") && editorJs.includes("node(\"overlay-toggle\").disabled = masking") && editorJs.includes('node("background-color").hidden = maskMode'), "local mode must disable auto, overlay and the background control");
 assert.ok(editorJs.includes("app.state.localPrompt") && editorJs.includes("hasResultImage()") && editorJs.includes("is-disabled"), "local mode must require a result and keep a separate description");
-assert.ok(imageEngineJs.includes('app.utils.composePrompt("", app.state.localPrompt)') && !imageEngineJs.includes("composePrompt(app.state.prompt, masking ?") && imageEngineJs.includes("if (app.state.maskMode || !app.state.autoGenerate"), "a local redraw must submit the local description only, never the artwork-wide prompt, and skip auto generation");
+assert.ok(imageEngineJs.includes('app.utils.composePrompt("", english(app.state.localPrompt))') && !imageEngineJs.includes("composePrompt(app.state.prompt, masking ?") && imageEngineJs.includes("if (app.state.maskMode || !app.state.autoGenerate"), "a local redraw must submit the local description only, never the artwork-wide prompt, and skip auto generation");
+// Every checkpoint here pairs with an English-trained text encoder, so the string
+// that leaves is the translation, and the only thing that makes one is saving a
+// prompt. A render reads the cache and never calls the translator itself.
+const engineRunBody = imageEngineJs.slice(imageEngineJs.indexOf("async function run("), imageEngineJs.indexOf("async function run(") + 3200);
+assert.ok(engineRunBody.includes("english(app.state.prompt)") && engineRunBody.includes("english(app.state.negativePrompt)") && engineRunBody.includes("english(app.state.localPrompt)") && !engineRunBody.includes("translate.translate("), "a render must submit the cached English of all three prompt fields without triggering a translation");
+assert.ok(engineRunBody.includes('app.components.ui.toast(') && engineRunBody.includes("hasCjk(english(") && engineRunBody.includes("提示词只能使用英文,请检查翻译大模型设置"), "an untranslated prompt must warn at the bottom of the screen on every drawing instead of silently sampling Chinese");
+assert.ok(translateJs.includes("async function probe(config)") && translateJs.includes("hasCjk(entry.text)") && translateJs.includes('"vibedraw-translations/v1"') && translateJs.includes("async function load()") && translateJs.includes("function persist()") && translateJs.includes("/vibedraw/v1/translate"), "translations must outlive the page, and the tab must be able to ask the plugin whether they work");
+assert.ok(translateJs.includes("if (!key || !hasCjk(key)) return key;") && translateJs.includes("!cache[value]"), "an English prompt must pass through untouched and a known translation must never be asked for twice");
+assert.ok(!/setTimeout|addEventListener/.test(translateJs), "translation must run on demand only: no typing timer and no live listener");
+assert.ok(appJs.includes("await app.services.translate.load()"), "the app must restore the last translations before the first render can read them");
+// The translation tab exists for a Chinese interface, offers the plugin as its only
+// format, borrows the one shared CVP connection rather than owning a copy, and can
+// be tested without generating an image.
+assert.ok(settingsJs.includes('var TRANSLATE_TAB = ["translate", "翻译", "Translation"]') && settingsJs.includes('function wantsTranslateTab() { return app.i18n.language() === "zh"; }'), "the translation tab must exist for a Chinese interface");
+assert.ok(settingsJs.includes('SLOT_TABS.concat([TRANSLATE_TAB])') && settingsJs.includes('data-slot-tab="'), "the translation tab must sit beside the three task tabs");
+const translateCardBody = settingsJs.slice(settingsJs.indexOf("var card = translating"), settingsJs.indexOf("      : '<div data-model-card="));
+assert.ok(translateCardBody.includes("ComfyUI Vibedraw Plugin") && !translateCardBody.includes('select("protocol"'), "the translation tab must offer the plugin as the only API format");
+assert.ok(translateCardBody.includes('input("endpoint"') && translateCardBody.includes("secretField") && translateCardBody.includes("sharedHelp"), "the translation tab must carry the shared plugin address and password");
+assert.ok(translateCardBody.includes("data-test-translate") && settingsJs.includes("app.services.translate.probe(shared)"), "the translation tab must be testable without generating an image");
+assert.ok(settingsJs.includes("if (sharedField) shared[field.name] = value;") && settingsJs.includes("if (!translating) draft[slot][field.name] = value;"), "the translation tab must write the one shared connection and own no task of its own");
+const settingsSaveBody = settingsJs.slice(settingsJs.indexOf("function workSettings"), settingsJs.indexOf("function about("));
+assert.ok(/hasCjk\(value\)/.test(settingsSaveBody) && settingsSaveBody.includes("app.services.translate.translated(") && settingsSaveBody.includes("await app.services.translate.translate("), "artwork settings must translate only what has Chinese and not repeat a translation it already has");
+assert.ok(settingsJs.includes('data-translate-now="prompt"') && settingsJs.includes('data-translate-now="negativePrompt"'), "both artwork prompt fields must offer the translate-now action");
+assert.ok(settingsJs.includes("id=\"prompt-english\"") && settingsJs.includes("id=\"negativePrompt-english\""), "both artwork prompt fields must show the English of the last translation");
+assert.ok(editorJs.includes("data-translate-now>") && editorJs.includes("app.services.translate.translated("), "the local description must offer the same translate-now action and must not repeat a translation");
 assert.ok(editorJs.includes("app.state.maskVisible = Number(event.target.value) >= 50") && editorJs.includes("app.state.maskVisible = app.state.maskVisible === false") && editorJs.includes('node("opacity-target-label").textContent = masking ? t("蒙版层显示（0 或 100）"'), "inside local redraw the eye and the slider must drive the mask layer only");
 assert.ok(editorJs.includes('node("result-opacity").disabled = masking ? false') && editorJs.includes('visibility.disabled = masking ? false : !hasResult') && !editorJs.includes("成图固定不透明"), "local redraw must keep both controls usable and must never label the slider with the result opacity");
 assert.ok(canvasJs.includes("function captureComposition(overrides)") && canvasJs.includes("options.withResult ? { localMode: true } : null") && imageEngineJs.includes("if (masking) referenceOptions.withResult = true"), "a local redraw must reference the decorated result on purpose instead of inheriting the mode flag");
@@ -143,7 +201,16 @@ assert.ok(html.includes('id="status-line"') && (html.match(/data-help-zh=/g) || 
 assert.ok(editorJs.includes('app.state.layerOpacity = 0.2') && editorJs.includes('Number(app.state.layerOpacity) < 0.2'), "Canvas interaction must restore a hidden overlay drawing layer to 20% visibility");
 assert.ok(editorJs.includes('function animateResultOpacityFloor()') && editorJs.includes('duration = 500') && editorJs.includes('app.state.resultOpacity = from +'), "Fast and rolled-seed results must animate opacity back to 20% when hidden");
 assert.match(editorCss, /\.stage-busy\{[^}]*pointer-events:none\}/, "Generation wait layer must pass pointer input through to the canvas");
-assert.ok(componentsCss.includes(".render-preview{position:fixed;z-index:1000") && componentsCss.includes(".render-preview{position:fixed!important") && componentsCss.includes("width:100vw!important") && componentsCss.includes(".render-preview-stage{position:absolute!important;inset:0!important") && componentsCss.includes("height:100%!important") && componentsCss.includes("gap:10px!important") && componentsCss.includes("background:transparent!important") && componentsCss.includes("backdrop-filter:blur(18px) saturate(1.45) contrast(1.2)"), "fullscreen render preview must stay above app chrome with a fixed frosted toolbar");
+assert.ok(componentsCss.includes(".render-preview{position:fixed;z-index:1000") && componentsCss.includes(".render-preview{position:fixed!important") && componentsCss.includes("width:100vw!important") && componentsCss.includes(".render-preview-stage{position:absolute!important;inset:0!important") && componentsCss.includes("height:100%!important") && componentsCss.includes(".render-preview-tools .icon-button+.icon-button{margin-left:10px!important}") && componentsCss.includes("background:transparent!important") && componentsCss.includes("backdrop-filter:blur(18px) saturate(1.45) contrast(1.2)"), "fullscreen render preview must stay above app chrome with a fixed frosted toolbar");
+// This device runs Chrome 83, which predates flex gap: a flex row spaced with `gap`
+// silently collapses into touching children, which is exactly how the preview toolbar
+// and the main prompt row shipped broken. Spacing in a flex row must be an adjacent
+// sibling margin. Grid gap is fine and is left alone.
+[["render preview toolbar", componentsCss, /\.render-preview-tools\{[^}]*gap:/], ["render preview prompt bar", componentsCss, /\.render-preview-promptbar\{[^}]*gap:/], ["render preview weight", componentsCss, /\.render-preview-weight\{[^}]*gap:/], ["main prompt row", editorCss, /\.prompt-panel\{[^}]*gap:/]].forEach(([label, css, pattern]) => {
+  assert.ok(!pattern.test(css), label + " must space its flex children with a margin: this WebView drops flex gap");
+});
+assert.ok(componentsCss.includes(".render-preview-weight{margin-left:8px;width:calc(34% - 8px)}") && editorCss.includes("height:32px;margin-left:8px}"), "the preview weight box and the main weight control must claim their 8px through a margin");
+assert.ok(componentsCss.includes(".render-preview-adjust-actions{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-start;padding-top:4px}") && componentsCss.includes(".render-preview-adjust-actions .button{min-height:34px;padding:6px 15px;font-size:11.5px}"), "the adjustment actions must be left-aligned full-size buttons");
 assert.ok(componentsCss.includes("contrast(2) brightness(1)!important") && editorCss.includes("contrast(2) brightness(1)!important"), "fullscreen frosted surfaces must use the high-contrast 2.0 brightness treatment");
 assert.ok(html.includes('class="fullscreen-pan-thumb"') && editorJs.includes("bindFullscreenPanToggle") && editorJs.includes("canvasPanLimit") && editorJs.includes("is-pan-scrollbar"), "Fullscreen toggle must support long-press horizontal canvas panning");
 assert.ok(settingsJs.includes('range("colorOpacity"') && settingsJs.includes('object.opacity = opacity') && settingsJs.includes('app.state.opacity = opacity'), "color dialogs must apply opacity to the active stroke tool or selected strokes");
@@ -157,6 +224,25 @@ assert.ok(!html.includes('id="stage-badge"'), "canvas must not show a preview ba
 assert.ok(runtimeJs.includes("function createFrameTask") && runtimeJs.includes("function createLru"), "runtime must provide shared frame scheduling and bounded caches");
 assert.ok(drawingJs.includes("function cloneObjects") && drawingJs.includes("function estimateWeight"), "drawing data operations must avoid JSON cloning and support bounded history");
 assert.ok(canvasJs.includes("contentCanvas") && canvasJs.includes("scheduleRender") && canvasJs.includes("HISTORY_MAX_WEIGHT"), "canvas must use cached content, frame scheduling, and bounded undo history");
+// Generated images join the undo journal, so 120 consecutive generations must be
+// 120 steps back. The journal carries the result by reference, is tagged by kind,
+// and stays in memory: it is never part of an artwork record.
+assert.ok(canvasJs.includes("var HISTORY_MAX_UNDO_STEPS = 120") && canvasJs.includes("var HISTORY_MAX_ENTRIES = HISTORY_MAX_UNDO_STEPS + 1") && canvasJs.includes("HISTORY_MAX_RESULT_CHARS"), "the undo journal must allow 120 steps, one entry per step plus the current state, with a bound on the images it holds");
+assert.ok(canvasJs.includes("_resultChars: result && result.src") && canvasJs.includes('app.events.emit("result:changed")'), "a journal entry must carry the generated result, so one undo steps the result back to the previous image");
+assert.ok(canvasJs.includes('function commitResult() { commitEntry("result"); }') && canvasJs.includes("next._kind = kind") && canvasJs.includes('{ schedule: undone._kind !== "result" }'), "a finished generation must be a journal step of its own, and undoing it must not immediately regenerate over the recovered image");
+assert.ok(canvasJs.includes("state.result = data.result ? { src: data.result.src") && canvasJs.includes("logicalFileId: data.result.logicalFileId") && !/state\.result = data\.result \|\| null/.test(canvasJs), "stepping a result back must rebuild it without the stored file reference that the save-time cleanup reclaimed while it was history");
+// Stepping the journal emits the change; something has to repaint the stage. With no
+// listener the state is right and the screen is stale, which is exactly how a working
+// undo looks broken, so the pairing is asserted rather than assumed.
+assert.ok(canvasJs.includes('app.events.emit("result:changed")') && editorJs.includes('app.events.on("result:changed"'), "the result-changed notification must have a listener, or stepping the result back would leave the stage on the newer image");
+assert.ok(editorJs.slice(editorJs.indexOf('app.events.on("result:changed"')).slice(0, 400).includes("syncCanvas()"), "the result-changed listener must repaint the stage");
+const generationDoneBody = editorJs.slice(editorJs.indexOf('app.events.on("generation:done"'), editorJs.indexOf('app.events.on("generation:progress"'));
+assert.ok(generationDoneBody.includes("canvas.commitResult()") && generationDoneBody.indexOf("canvas.commitResult()") > generationDoneBody.indexOf('result.slot === "upscale"'), "only a Fast or local-redraw result may join the undo journal; a render must stay out of it");
+assert.ok(storeJs.includes("snapshot.render = storedImage(app.state.renderResult)") && storeJs.includes("if (copy.render && copy.render.asset)") && storeJs.includes("render: snapshot && snapshot.render") && storeJs.includes("render.asset = await app.services.assets.persist(render.src, null)"), "the last render must be saved with the artwork and read back from its files on load");
+assert.ok(canvasJs.includes("state.renderResult = saved.render || null"), "loading an artwork must put its last render back into the state, or the saved render is unreachable");
+assert.ok(assetsJs.includes("snapshot && snapshot.render ? [snapshot.render] : []"), "the asset cleanup must keep the files of the artwork's last render");
+assert.ok(!/history/.test(storeJs), "the undo journal must stay in memory and never enter an artwork record");
+assert.ok(html.includes("成图最多可回退 120 张") && html.includes("Up to 120 results can be stepped back"), "the undo help must state how far the generated-image journal reaches");
 const references = [...html.matchAll(/(?:src|href)="([^"#]+)"/g)].map(match => match[1]);
 for (const reference of references) {
   if (reference.startsWith("/__hermit/") || reference.startsWith("data:")) continue;

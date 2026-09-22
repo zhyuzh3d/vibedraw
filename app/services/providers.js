@@ -172,12 +172,20 @@
     return error;
   }
   function cvpStrength(config, strength) {
+    var base = Number(config && config.refStrength);
+    var rendered = Boolean(config) && (config.task === "upscale" || config.slot === "upscale");
+    if (!Number.isFinite(base) || base <= 0) base = rendered ? 0.75 : 0.55;
+    // A render exists to enlarge the picture that is already on the canvas, not to
+    // reinterpret it, so it keeps its own reference weight instead of being scaled
+    // by the artwork-wide creativity slider. That slider stays what it looks like:
+    // a control for the free-hand quick draw. Scaling the render by it made the
+    // one task that must preserve the artwork the most destructive pass in the app.
+    if (rendered) return u.clamp(base, 0.05, 0.95);
     // The artwork slider runs 0–100% with 80% as the neutral point, so the
     // per-slot reference weight stays the default while the slider still lets
     // the user trade fidelity for freedom.
-    var value = Number(strength), base = Number(config && config.refStrength);
+    var value = Number(strength);
     if (!Number.isFinite(value) || value <= 0) value = 0.8;
-    if (!Number.isFinite(base) || base <= 0) base = 0.55;
     return u.clamp(base * (value / 0.8), 0.05, 0.95);
   }
   async function cvpGenerate(config, input) {

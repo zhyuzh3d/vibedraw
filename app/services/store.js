@@ -83,6 +83,20 @@
     delete revisions[key]; delete chunkManifests[key];
     cleanupChunks(key, manifest).catch(function () {});
   }
+  // Every request path reads config[slot].endpoint, so a shared CVP connection is
+  // kept as one object here and re-derived into each CVP task. That way editing the
+  // connection in any task edits all three, while the task-specific settings (size,
+  // steps, reference weight, mask grow) stay per task.
+  function shareCvpConnection(config) {
+    var connection = app.utils.merge({ endpoint: "", apiKey: "", customHeaders: "" }, config.connection || {});
+    config.connection = connection;
+    ["quick", "inpaint", "upscale"].forEach(function (name) {
+      var model = config[name];
+      if (!model || model.protocol !== "cvp") return;
+      model.endpoint = connection.endpoint; model.apiKey = connection.apiKey; model.customHeaders = connection.customHeaders;
+    });
+    return config;
+  }
   function migrateConfig(stored) {
     var previousSchema = Number(stored && stored.schema) || 0;
     var original = app.utils.merge(app.defaults, stored || {});
@@ -119,9 +133,19 @@
       if (!Number.isFinite(Number(model.refStrength)) || Number(model.refStrength) <= 0) model.refStrength = app.defaults[name].refStrength;
       if (!Number.isFinite(Number(model.growMaskBy))) model.growMaskBy = 8;
     });
+    if (previousSchema < 8) {
+      // Schema 8 shares one CVP connection across the three tasks: the address a
+      // configured CVP task already had becomes that connection and the other tasks
+      // follow it instead of keeping their own.
+      var donor = ["quick", "inpaint", "upscale"].map(function (name) { return value[name]; }).filter(function (model) {
+        return model && model.protocol === "cvp" && String(model.endpoint || "").trim();
+      })[0];
+      if (donor) value.connection = { endpoint: donor.endpoint, apiKey: donor.apiKey || "", customHeaders: donor.customHeaders || "" };
+    }
+    shareCvpConnection(value);
     value.canvas = value.canvas || {};
     delete value.canvas.overlayGenerate; delete value.canvas.includeResult; delete value.canvas.resultOpacity;
-    value.schema = 7;
+    value.schema = 8;
     return { value: value, changed: changed || JSON.stringify(value) !== JSON.stringify(original), migrateWorkTitles: previousSchema < 6 };
   }
   function isUntitledTitle(title) { return /^(?:未命名作品\d+|Untitled artwork\s+\d+)$/.test(String(title || "")); }
@@ -153,21 +177,27 @@
     return app.config;
   }
   async function saveConfig(config) {
-    var value = app.utils.merge(app.defaults, config);
+    var value = shareCvpConnection(app.utils.merge(app.defaults, config));
     await serial(function () { return write("config", value); }); app.config = value;
     return value;
   }
+  // Only references reach a record: image bytes and data URLs never do. The
+  // result and the last render are artwork data; older results are undo steps and
+  // stay in the in-memory journal, so they are not part of this snapshot at all.
+  function storedImage(image) {
+    if (!image) return null;
+    var stored = { asset: image.asset || null, logicalFileId: image.logicalFileId || "", slot: image.slot, prompt: image.prompt, createdAt: image.createdAt };
+    if (!stored.asset && image.src && !/^(data:|blob:)/.test(image.src)) stored.asset = { url: image.src };
+    return stored;
+  }
   function serializeCanvas() {
-    var snapshot = { schema: 9, objects: [], result: null, savedAt: Date.now() };
+    var snapshot = { schema: 10, objects: [], result: null, render: null, savedAt: Date.now() };
     fields.forEach(function (name) { snapshot[name] = app.state[name]; });
     snapshot.objects = app.state.objects.map(function (object) {
       return app.drawing.storageObject(object);
     });
-    if (app.state.result) {
-      var result = app.state.result;
-      snapshot.result = { asset: result.asset || null, logicalFileId: result.logicalFileId || "", slot: result.slot, prompt: result.prompt, createdAt: result.createdAt };
-      if (!snapshot.result.asset && result.src && !/^(data:|blob:)/.test(result.src)) snapshot.result.asset = { url: result.src };
-    }
+    snapshot.result = storedImage(app.state.result);
+    snapshot.render = storedImage(app.state.renderResult);
     return snapshot;
   }
   function fingerprint(snapshot) {
@@ -186,16 +216,18 @@
     return {
       workId: snapshot && snapshot.workId || "",
       objects: (snapshot && snapshot.objects || []).filter(function (object) { return Boolean(object.asset || object.logicalFileId); }).map(function (object) { return { asset: object.asset || null, logicalFileId: object.logicalFileId || "" }; }),
-      result: snapshot && snapshot.result ? { asset: snapshot.result.asset || null, logicalFileId: snapshot.result.logicalFileId || "" } : null
+      result: snapshot && snapshot.result ? { asset: snapshot.result.asset || null, logicalFileId: snapshot.result.logicalFileId || "" } : null,
+      render: snapshot && snapshot.render ? { asset: snapshot.render.asset || null, logicalFileId: snapshot.render.logicalFileId || "" } : null
     };
   }
   async function persistImages() {
-    var objects = app.state.objects.slice(), result = app.state.result;
+    var objects = app.state.objects.slice(), result = app.state.result, render = app.state.renderResult;
     for (var object of objects) {
       if (object.type !== "image" || object.asset) continue;
       object.asset = await app.services.assets.persist(object.src || object.url, null);
     }
     if (result && !result.asset) result.asset = await app.services.assets.persist(result.src, null);
+    if (render && !render.asset) render.asset = await app.services.assets.persist(render.src, null);
   }
   function meaningfulObjects() { return app.state.objects.some(function (object) { return !(object.type === "stroke" && object.tool === "mask"); }); }
   function meaningful() { return Boolean(meaningfulObjects() || app.state.result || String(app.state.prompt).trim() || String(app.state.workTitle).trim()); }
@@ -257,8 +289,9 @@
     if (Number(copy.schema) < 7 || !Number.isFinite(Number(copy.colorStrength))) copy.colorStrength = 0.3;
     if (Number(copy.schema) < 8 || copy.resultAdjustmentsEnabled === undefined) copy.resultAdjustmentsEnabled = true;
     if (Number(copy.schema) < 9) { copy.layerOpacity = 1; copy.resultOpacity = copy.overlayGenerate ? 1 : 0.9; }
+    if (Number(copy.schema) < 10) copy.render = null;
     if (!Number.isFinite(Number(copy.layerOpacity))) copy.layerOpacity = 1;
-    delete copy.includeResult; delete copy.referenceStrength; copy.schema = 9;
+    delete copy.includeResult; delete copy.referenceStrength; copy.schema = 10;
     var missing = false;
     for (var object of copy.objects || []) {
       if (object.type === "image") {
@@ -270,12 +303,18 @@
       try { copy.result.src = await app.services.assets.resolve(copy.result.asset); }
       catch (_) { copy.result.src = ""; missing = true; }
     }
+    if (copy.render && copy.render.asset) {
+      try { copy.render.src = await app.services.assets.resolve(copy.render.asset); }
+      catch (_) { copy.render.src = ""; missing = true; }
+    }
     if (missing) app.events.emit("error", new Error(app.i18n.text("部分历史图片无法读取，草稿与描述仍可编辑", "Some saved images are unavailable. Your sketch and prompt remain editable")));
     return copy;
   }
   async function loadCanvas() {
     var stored = await read("canvas", null), hydrated = await hydrate(stored);
-    if (stored && Number(stored.schema) >= 9) { lastCanvasFingerprint = fingerprint(stored); lastPersistedSnapshot = assetSnapshot(stored); }
+    // Only a record already in the current shape can seed the fingerprint; an older
+    // one is migrated by hydrate() and must be written back once.
+    if (stored && Number(stored.schema) >= 10) { lastCanvasFingerprint = fingerprint(stored); lastPersistedSnapshot = assetSnapshot(stored); }
     return hydrated;
   }
   function list() { return index.map(function (item) { return { id: item.id, title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt, hasResult: item.hasResult }; }); }

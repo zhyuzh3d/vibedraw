@@ -37,7 +37,7 @@
       </div>
       <section class="prompt-panel">
         <div class="prompt-readonly" id="prompt-display" role="text" tabindex="0" data-zh="画面描述，在作品设置中编辑" data-en="Image description, edit in Artwork settings" data-i18n-attr="aria-label"></div>
-        <div class="prompt-strength"><button class="icon-button" id="prompt-strength-default" type="button" data-zh="将图像权重设为80%" data-en="Set image weight to 80%" data-i18n-attr="aria-label"><i class="fa-regular fa-image" aria-hidden="true"></i></button><input id="prompt-strength" type="range" min="40" max="120" value="80" data-zh="图像权重" data-en="Image weight" data-i18n-attr="aria-label"><output id="prompt-strength-value">80%</output></div>
+        <div class="prompt-strength"><button class="icon-button" id="prompt-strength-default" type="button" data-zh="将图像权重设为80%" data-en="Set image weight to 80%" data-i18n-attr="aria-label"><i class="fa-regular fa-image" aria-hidden="true"></i></button><input id="prompt-strength" type="range" min="20" max="100" value="80" data-zh="图像权重" data-en="Image weight" data-i18n-attr="aria-label"><output id="prompt-strength-value">80%</output></div>
       </section>
       <section class="canvas-area" aria-label="Canvas">
         <div class="canvas-bar">
@@ -48,8 +48,8 @@
           <div class="canvas-actions">
             <button class="icon-button" id="canvas-fullscreen" aria-pressed="false" data-zh="全屏画布" data-en="Fullscreen canvas" data-i18n-attr="aria-label" data-help-zh="切换画布全屏，获得更大的绘制与选择空间。" data-help-en="Toggle fullscreen canvas for more drawing and selection space."><i class="fa-solid fa-expand"></i></button>
             <button class="icon-button" id="color-adjust" aria-expanded="false" aria-controls="color-adjust-panel" data-zh="调色" data-en="Color adjustments" data-i18n-attr="aria-label" data-help-zh="展开调色面板，实时调整成图的显示效果。" data-help-en="Open color adjustments to tune the displayed result live."><i class="fa-solid fa-palette"></i></button>
-            <button class="icon-button" id="undo" disabled data-zh="撤销" data-en="Undo" data-i18n-attr="aria-label" data-help-zh="撤销上一步画布编辑。" data-help-en="Undo the previous canvas edit."><i class="fa-solid fa-rotate-left"></i></button>
-            <button class="icon-button" id="redo" disabled data-zh="重做" data-en="Redo" data-i18n-attr="aria-label" data-help-zh="恢复刚刚撤销的画布编辑。" data-help-en="Restore the most recently undone canvas edit."><i class="fa-solid fa-rotate-right"></i></button>
+            <button class="icon-button" id="undo" disabled data-zh="撤销" data-en="Undo" data-i18n-attr="aria-label" data-help-zh="撤销上一步操作：画布编辑或成图切换。成图最多可回退 120 张，关闭应用后不可恢复。" data-help-en="Undo the last step: a canvas edit or a result change. Up to 120 results can be stepped back; closing the app clears the journal."><i class="fa-solid fa-rotate-left"></i></button>
+            <button class="icon-button" id="redo" disabled data-zh="重做" data-en="Redo" data-i18n-attr="aria-label" data-help-zh="恢复刚刚撤销的操作。" data-help-en="Redo the most recently undone step."><i class="fa-solid fa-rotate-right"></i></button>
             <button class="icon-button" id="clear-canvas" data-zh="清空草稿" data-en="Clear sketch" data-i18n-attr="aria-label" data-help-zh="删除全部画布元素，AI 成图会保留。" data-help-en="Remove all canvas elements while keeping the AI result."><i class="fa-regular fa-trash-can"></i></button>
           </div>
         </div>
@@ -140,8 +140,8 @@
     </div>
   </section>
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
-  <script src="./app/core/namespace.js"></script><script src="./app/core/utils.js"></script><script src="./app/core/runtime.js"></script><script src="./app/core/drawing.js"></script><script src="./app/core/i18n.js"></script>
-  <script src="./app/platform/hermit.js"></script><script src="./app/services/assets.js"></script><script src="./app/services/store.js"></script><script src="./app/services/providers.js"></script><script src="./app/services/image-engine.js"></script>
+  <script src="./app/core/namespace.js"></script><script src="./app/assets/comfyui-plugin.js"></script><script src="./app/core/utils.js"></script><script src="./app/core/runtime.js"></script><script src="./app/core/drawing.js"></script><script src="./app/core/i18n.js"></script>
+  <script src="./app/platform/hermit.js"></script><script src="./app/services/assets.js"></script><script src="./app/services/store.js"></script><script src="./app/services/providers.js"></script><script src="./app/services/translate.js"></script><script src="./app/services/image-engine.js"></script>
   <script src="./app/components/ui.js"></script><script src="./app/components/canvas.js"></script><script src="./app/components/render-preview.js"></script><script src="./app/components/settings.js"></script><script src="./app/components/gallery.js"></script>
   <script src="./app/features/editor.js"></script><script src="./app/features/self-test.js"></script><script src="./app/app.js"></script>
 </body>

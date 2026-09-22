@@ -23,7 +23,7 @@
       var timerId = setTimeout(function () {
         if (settled) return;
         settled = true;
-        reject(new Error(t("生成等待超时，已结束本次等待；A1X 任务可能仍在设备端运行，请稍后重试", "Generation timed out and this wait was closed. The A1X job may still be running; try again shortly.")));
+        reject(new Error(t("生成等待超时，已结束本次等待；服务端任务可能仍在运行，请稍后重试", "Generation timed out and this wait was closed. The server job may still be running; try again shortly.")));
       }, timeoutMs);
       promise.then(function (value) {
         if (settled) return;
@@ -54,7 +54,10 @@
       if (!automatic) app.events.emit("needs-config", slot);
       return;
     }
-    var prompt = app.utils.composePrompt(app.state.prompt, masking ? app.state.localPrompt : "");
+    // A local redraw states what the marked area should become. Submitting the
+    // artwork-wide prompt as well would drag the whole composition into the
+    // patched region, so only the local description travels with the mask.
+    var prompt = masking ? app.utils.composePrompt("", app.state.localPrompt) : app.utils.composePrompt(app.state.prompt, "");
     var config = app.utils.copy(app.config[slot]);
     config.slot = slot; config.task = slot;
     if (slot === "upscale") config.inputMode = "sketch";
@@ -62,7 +65,7 @@
       if (!automatic) app.events.emit("error", new Error(t("先点「描述」写清这一块要改成什么，再生成", "Describe what this area should become first")));
       return;
     }
-    if (!prompt && config.protocol !== "a1x-image") {
+    if (!prompt) {
       if (!automatic) app.events.emit("error", new Error(t("先在画布上方描述你想画什么", "Describe your idea above the canvas first")));
       return;
     }
@@ -83,13 +86,24 @@
     var succeeded = false;
     app.state.busy = true; app.events.emit("generation:start", { slot: slot });
     try {
-      var a1xReference = config.protocol === "a1x-image" ? { size: slot === "upscale" ? 1024 : 512, mime: "image/jpeg", quality: 0.82, maxBytes: 500 * 1024 } : null;
-      var referenceOptions = a1xReference || (slot === "upscale" ? { size: Number(config.width) || 1024, mime: "image/png" } : null);
       var maskDataUrl = null, openAiMaskDataUrl = null;
       if (masking) {
         if (config.protocol === "openai-images") openAiMaskDataUrl = canvasInput.composeMask(true);
         else if (config.protocol === "sd-webui" || config.protocol === "cvp") maskDataUrl = canvasInput.composeMask(false);
       }
+      // The reference image still travels inline in the request body, so it is
+      // encoded as a JPEG that fits what the mask left of the transport budget; a
+      // full-size PNG would not fit. A local redraw has to reference the decorated
+      // result instead of the sketch, and says so explicitly rather than relying
+      // on the mask mode flag alone.
+      var reserved = String(maskDataUrl || openAiMaskDataUrl || "").length + 8000;
+      var referenceOptions = {
+        mime: "image/jpeg",
+        quality: 0.92,
+        maxBytes: Math.max(40000, (app.platform.hermit.messageChars || 200000) - reserved)
+      };
+      if (masking) referenceOptions.withResult = true;
+      if (slot === "upscale") referenceOptions.size = Number(config.width) || 1024;
       var input = { prompt: prompt, negativePrompt: app.state.negativePrompt, seed: app.state.seedLocked ? app.state.seed : -1, strength: app.state.strength, colorStrength: app.state.colorStrength,
         imageDataUrl: slot === "upscale" ? await canvasInput.composeVisibleInput(referenceOptions) : await canvasInput.composeInput(referenceOptions),
         maskDataUrl: maskDataUrl, openAiMaskDataUrl: openAiMaskDataUrl };

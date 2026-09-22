@@ -3,7 +3,7 @@
   var revisions = {}, chunkManifests = {}, saveTimer = 0, queue = Promise.resolve(), index = [], paused = false, savePending = false;
   var lastCanvasFingerprint = "", lastPersistedSnapshot = null;
   var CHUNK_SCHEMA = "vibedraw-chunked/v1", DIRECT_LIMIT = 30000, CHUNK_BYTES = 30000, IO_CONCURRENCY = 4, MAX_BYTES = 8 * 1024 * 1024;
-  var fields = ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"];
+  var fields = ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "maskVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"];
   function serial(task) { var next = queue.then(task); queue = next.catch(function () {}); return next; }
   async function readRaw(key, fallback) {
     var record = await app.platform.hermit.getData("vibedraw", key);
@@ -102,20 +102,22 @@
     ["quick", "inpaint", "upscale"].forEach(function (name) {
       var model = value[name];
       if (!model) return;
-      if (model.protocol === "a1x-flux") model.protocol = "a1x-image";
-      // The generic ComfyUI workflow contract was replaced by the plugin's own
-      // task API, so an old workflow slot becomes a CVP slot.
-      if (model.protocol === "comfyui") model.protocol = "cvp";
+      // The A1X native API and the generic ComfyUI workflow contract are both
+      // retired, so such a slot becomes a CVP slot. The connection the user
+      // typed is kept; the task-shaped fields fall back to the CVP defaults.
+      var retired = model.protocol === "a1x-flux" || model.protocol === "a1x-image" || model.protocol === "comfyui";
+      if (retired) {
+        model.protocol = "cvp";
+        model.width = model.height = name === "upscale" ? 1024 : 512;
+        model.steps = app.defaults[name].steps;
+        model.inputMode = "sketch";
+        model.model = "";
+        model.workflow = "";
+        model.guidanceScale = 1;
+      }
       model.slot = name; model.task = name;
       if (!Number.isFinite(Number(model.refStrength)) || Number(model.refStrength) <= 0) model.refStrength = app.defaults[name].refStrength;
       if (!Number.isFinite(Number(model.growMaskBy))) model.growMaskBy = 8;
-      if (model.protocol === "a1x-image") {
-        if (previousSchema < 4 || [2, 4, 8].indexOf(Number(model.steps)) < 0) model.steps = name === "upscale" ? 8 : 4;
-        model.width = model.height = name === "upscale" ? 1024 : 512;
-        model.inputMode = "sketch";
-        model.guidanceScale = name === "upscale" ? 1 : 2;
-        model.model = name === "upscale" ? (Number(model.steps) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4") : "dreamshaper8_lcm_blended_img2img_sd15";
-      }
     });
     value.canvas = value.canvas || {};
     delete value.canvas.overlayGenerate; delete value.canvas.includeResult; delete value.canvas.resultOpacity;

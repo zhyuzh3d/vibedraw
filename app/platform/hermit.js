@@ -4,6 +4,11 @@
   var ready = false;
   var waiters = [];
 
+  // The page-to-host transport drops any single message larger than 256 KiB
+  // without a reply or an error, which leaves the caller waiting for its own
+  // timeout. Every inline request body therefore stays well below that.
+  var MESSAGE_CHARS = 200000;
+
   function current() { return window.hermit && window.hermit.isReady ? window.hermit : null; }
   function markReady() {
     if (!current()) return;
@@ -27,8 +32,20 @@
     });
   }
 
+  function localized(zh, en) { return app.i18n && app.i18n.text ? app.i18n.text(zh, en) : zh; }
+
+  function checkBudget(options) {
+    var size = typeof options.bodyText === "string" ? options.bodyText.length
+      : options.bodyBytes ? Math.ceil(options.bodyBytes.length / 3) * 4 : 0;
+    if (size <= MESSAGE_CHARS) return;
+    var kb = Math.round(size / 1024);
+    throw new Error(localized("这次要发送的数据有 " + kb + " KB，超过了宿主单次请求的上限。请减少画布上的图片元素，或改用更小的画幅后重试",
+      "This request carries " + kb + " KB, above what the host accepts in one message. Remove image elements from the canvas or use a smaller size and retry."));
+  }
+
   async function request(options) {
     app.utils.validateEndpoint(options.url);
+    checkBudget(options);
     var headers = options.headers || {};
     if (current() || await awaitReady(800)) {
       var params = {
@@ -126,6 +143,7 @@
   }
 
   app.platform.hermit = {
+    messageChars: MESSAGE_CHARS,
     current: current,
     available: function () { return Boolean(current()); },
     awaitReady: awaitReady,

@@ -69,12 +69,12 @@
     return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>1:1</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
   }
   function renderModels() {
-    var model = draft[slot], protocol = model.protocol, cvp = protocol === "cvp", a1x = protocol === "a1x-image";
+    var model = draft[slot], protocol = model.protocol, cvp = protocol === "cvp";
     var choices = app.services.providers.protocols.map(function (p) { return [p.id, p.name]; });
     var tabs = SLOT_TABS.map(function (entry) {
       return '<button data-slot-tab="' + entry[0] + '" class="' + (slot === entry[0] ? "is-active" : "") + '">' + t(entry[1], entry[2]) + '</button>';
     }).join("");
-    var secretLabel = cvp ? t("访问密码", "Access password") : a1x ? t("A1X 访问密码", "A1X access password") : "API Key";
+    var secretLabel = cvp ? t("访问密码", "Access password") : "API Key";
     var secretHint = cvp
       ? t("在 ComfyUI 的 VibeDraw 配置节点里设置；留空表示插件没有启用密码", "Set it in the ComfyUI VibeDraw config node; leave empty when the plugin has no password")
       : t("免鉴权的本地服务可留空", "Optional for local services");
@@ -83,9 +83,9 @@
       '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
       select("protocol", t("接口模式", "API format"), protocol, choices) +
       aspectField(model, slot) +
-      input("endpoint", t("服务器地址", "Server address"), model.endpoint, "url", cvp || a1x ? "http://192.168.1.2:8188" : "https://…") +
+      input("endpoint", t("服务器地址", "Server address"), model.endpoint, "url", cvp ? "http://192.168.1.2:8188" : "https://…") +
       '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>' +
-      (!cvp && !a1x ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
+      (!cvp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
       (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的三套工作流决定；点下方按钮可以直接读取插件当前的模型与能力。", "Aspect, steps and reference weight come from the plugin's three built-in workflows. The button below reads the plugin's current model and capabilities.") + '</p>' : '') +
       '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + (cvp ? input("refStrength", t("参考图权重基准", "Reference weight"), model.refStrength, "number") : '') + '</div>' +
       (cvp ? '<div class="field-row">' + input("growMaskBy", t("蒙版外扩（像素）", "Mask grow (px)"), model.growMaskBy, "number") + '</div>' : '') +
@@ -144,12 +144,6 @@
         if (!config) return;
         if (!String(config.endpoint || "").trim()) return;
         u.validateEndpoint(config.endpoint); u.parseHeaders(config.customHeaders);
-        if (config.protocol === "a1x-image") {
-          var wanted = name === "upscale" ? 1024 : 512;
-          if (Number(config.width) !== wanted || Number(config.height) !== wanted || [2, 4, 8].indexOf(Number(config.steps)) < 0) throw new Error(t("A1X 图片模型要求实时 512 × 512、渲染 1024 × 1024，并支持 2 / 4 / 8 步", "A1X image models require 512 × 512 previews, 1024 × 1024 renders, and 2 / 4 / 8 steps"));
-          config.guidanceScale = name === "upscale" ? 1 : 2;
-          config.model = name === "upscale" ? (Number(config.steps) === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4") : "dreamshaper8_lcm_blended_img2img_sd15";
-        }
         if (!(Number(config.timeoutMs) >= 5000 && Number(config.timeoutMs) <= 300000)) throw new Error(t("超时需为 5–300 秒", "Use a timeout between 5 and 300 seconds"));
         if (config.protocol === "cvp" && !(Number(config.refStrength) > 0 && Number(config.refStrength) <= 1)) throw new Error(t("参考图权重需为 0–1", "Reference weight must be between 0 and 1"));
       });
@@ -158,11 +152,10 @@
   }
   function workSettings() {
     var state = app.state;
-    var quickA1x = app.config.quick.protocol === "a1x-image", a1x = quickA1x || app.config.quality.protocol === "a1x-image";
     var root = ui.open({ sheetClass: "work-settings-sheet", contentClass: "work-settings-content", title: t("作品设置", "Artwork settings"), footerHtml: footer(t("应用", "Apply")), html:
       textarea("prompt", t("简述你期望的画面内容（英文）", "Describe the image you expect (English)"), state.prompt, "For example: a blue crystal bird flying over snowy mountains", 3) +
       textarea("negativePrompt", t("不希望出现内容（英文）", "What to avoid (English)"), state.negativePrompt, "For example: blurry, distorted, text, watermark", 2) +
-      range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, a1x ? 200 : 100, "%", "strength-field") +
+      range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, 100, "%", "strength-field") +
       '<p class="field-help compact-help">' + t("设置100或更高可以让AI画图和手绘稿更一致；设置80或更低会让AI更有创造力；请随时根据需要来这里调整。", "Set 100 or higher to keep the AI image closer to your sketch; set 80 or lower to give the AI more creative freedom. Return here and adjust it whenever needed.") + '</p>' +
       '<div class="field-row">' + input("seed", t("随机种子", "Seed"), state.seed, "number", t("关闭锁定时由模型自动随机", "The model randomizes while unlocked")) + input("autoDelayMs", t("笔刷等待（毫秒）", "Brush wait (ms)"), state.autoDelayMs, "number") + '</div>' +
       '<label class="switch-row"><span><strong>' + t("锁定随机种子", "Lock random seed") + '</strong><small>' + t("开启后重复使用当前种子，便于稳定画风与构图", "Reuse the current seed for more consistent style and composition") + '</small></span><input class="toggle-switch" name="seedLocked" type="checkbox" role="switch"' + (state.seedLocked ? " checked" : "") + '></label>' +

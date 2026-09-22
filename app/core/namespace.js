@@ -4,7 +4,7 @@
   var app = global.vibedraw = global.vibedraw || {};
   var listeners = {};
 
-  app.version = "0.4.28";
+  app.version = "0.4.34";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -29,6 +29,7 @@
     resultOpacity: 0.9,
     layerOpacity: 1,
     resultVisible: true,
+    maskVisible: true,
     resultBrightness: 100,
     resultContrast: 100,
     resultSaturation: 100,

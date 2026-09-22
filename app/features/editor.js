@@ -10,7 +10,7 @@
   function init() {
     ui = app.components.ui; canvas = app.components.canvas; resizeTask = app.runtime.createFrameTask(resizeStage); canvasSyncTask = app.runtime.createFrameTask(syncCanvas);
     app.components.gallery.init({ newWork: newWork, resetWork: resetWork, syncAll: syncAll });
-    initial = { objects: [], result: null, prompt: "", localPrompt: "", workId: "", workTitle: "", background: "#ffffff", negativePrompt: app.config.canvas.negativePrompt || "", seed: randomSeed(), seedLocked: true, strength: 0.8, colorStrength: 0.3, autoDelayMs: Number(app.config.canvas.autoDelayMs) || 850, overlayGenerate: false, resultOpacity: 0.9, layerOpacity: 1, resultVisible: true, resultBrightness: configuredAdjustment("resultBrightness"), resultContrast: configuredAdjustment("resultContrast"), resultSaturation: configuredAdjustment("resultSaturation"), resultHue: configuredAdjustment("resultHue"), resultGlow: configuredAdjustment("resultGlow"), resultClarity: configuredAdjustment("resultClarity"), resultAdjustmentsEnabled: app.config.canvas.resultAdjustmentsEnabled !== false };
+    initial = { objects: [], result: null, prompt: "", localPrompt: "", workId: "", workTitle: "", background: "#ffffff", negativePrompt: app.config.canvas.negativePrompt || "", seed: randomSeed(), seedLocked: true, strength: 0.8, colorStrength: 0.3, autoDelayMs: Number(app.config.canvas.autoDelayMs) || 850, overlayGenerate: false, resultOpacity: 0.9, layerOpacity: 1, resultVisible: true, maskVisible: true, resultBrightness: configuredAdjustment("resultBrightness"), resultContrast: configuredAdjustment("resultContrast"), resultSaturation: configuredAdjustment("resultSaturation"), resultHue: configuredAdjustment("resultHue"), resultGlow: configuredAdjustment("resultGlow"), resultClarity: configuredAdjustment("resultClarity"), resultAdjustmentsEnabled: app.config.canvas.resultAdjustmentsEnabled !== false };
     node("app-version").textContent = "v" + app.version;
     bindMenu(); bindTools(); bindOptions(); bindActions(); bindGeneration(); bindPromptControls(); bindActionHelp();
     app.events.on("canvas:rendered", syncCanvas);
@@ -111,6 +111,9 @@
     maskMode = true; app.state.maskMode = true;
     app.services.imageEngine.stopAuto();
     status(t("局部模式：涂红要改的区域，再点「描述」写这一块要改成什么", "Local mode: mark the area in red, then describe what it should become"));
+    // Entering local mode changes what the eye and the slider mean, so they are
+    // repainted here instead of waiting for a canvas change that may never come.
+    syncCanvas();
     return true;
   }
   function exitMaskMode() {
@@ -118,6 +121,9 @@
     maskMode = false; app.state.maskMode = false;
     if (canvas.hasMask()) status(t("已退出局部模式：红色标记已隐藏并保留，下次进入局部会继续显示，也不再参与生成", "Left local mode. Red marks are hidden but kept for your next local edit, and no longer affect generation"));
     syncMaskUi();
+    // Leaving local mode hands the two controls back to the result, which the
+    // canvas repaint cannot be relied on to announce either.
+    syncCanvas();
   }
   function requestMaskTool() {
     if (!hasResultImage()) { status(t("先用「快速」或随机按钮生成成图，再标记要改的局部", "Generate a result with Fast or the dice first, then mark the area to change")); ui.toast(t("还没有成图，不能使用局部", "No result yet. Local mode is unavailable"), "error"); return; }
@@ -174,11 +180,27 @@
       status(removed ? t("局部标记已清除，可以重新涂出要改的区域", "Local marks cleared. Mark the area again") : t("当前没有局部标记", "No local marks to clear"));
     });
     node("result-opacity").oninput = function (event) {
+      // In local redraw this slider is the mask switch, not a transparency: it
+      // means 0 (mask layer hidden) or 100 (mask layer shown) and nothing else.
+      if (maskMode) {
+        app.state.maskVisible = Number(event.target.value) >= 50;
+        canvas.refresh(); syncCanvas();
+        app.services.store.scheduleCanvasSave();
+        return;
+      }
       var value = Number(event.target.value) / 100;
       if (app.state.overlayGenerate) app.state.layerOpacity = value; else app.state.resultOpacity = value;
       canvasSyncTask.request(); app.services.store.scheduleCanvasSave(); if (app.state.overlayGenerate) app.services.imageEngine.schedule();
     };
-    node("result-visibility").onclick = function () { app.state.resultVisible = app.state.resultVisible === false; syncCanvas(); app.services.store.scheduleCanvasSave(); };
+    node("result-visibility").onclick = function () {
+      if (maskMode) {
+        app.state.maskVisible = app.state.maskVisible === false;
+        canvas.refresh(); syncCanvas();
+        app.services.store.scheduleCanvasSave();
+        return;
+      }
+      app.state.resultVisible = app.state.resultVisible === false; syncCanvas(); app.services.store.scheduleCanvasSave();
+    };
     document.querySelectorAll("[data-adjust]").forEach(function (field) {
       field.oninput = function () {
         app.state[field.dataset.adjust] = Number(field.value);
@@ -278,7 +300,7 @@
     app.events.on("generation:done", function (result) {
       syncCanvas();
       if (result && result.slot === "upscale") { app.state.renderResult = result; syncRenderResult(true); status(t("高清渲染完成，可在画布右下角查看", "High-resolution render complete. View it from the diamond on the canvas.")); }
-      else { animateResultOpacityFloor(); status(t("成图已返回，正在显示…", "Result received · displaying…")); }
+      else { if (!maskMode) animateResultOpacityFloor(); status(t("成图已返回，正在显示…", "Result received · displaying…")); }
     });
     app.events.on("generation:progress", function (message) { node("busy-label").textContent = String(message || ""); status(message); });
     app.events.on("generation:error", function (error) { status(t("生成失败，可修改设置后重试", "Generation failed. Adjust settings and retry.")); app.events.emit("error", error); });
@@ -356,14 +378,20 @@
     node("stage-empty").hidden = canvas.contentCount() > 0 || hasResult;
     node("clear-canvas").disabled = canvas.contentCount() === 0;
     node("export-image").disabled = false;
-    var activeOpacity = masking ? 1 : overlay ? layerOpacity : resultOpacity;
+    var maskVisible = state.maskVisible !== false;
+    // Local redraw borrows the two result controls but swaps their subject to the
+    // mask layer: the eye shows or hides the mask, and the slider is its on/off
+    // switch. Neither of them reports the result or the element layer while the
+    // mask tool is open.
+    var shown = masking ? maskVisible : resultVisible;
+    var activeOpacity = masking ? (maskVisible ? 1 : 0) : overlay ? layerOpacity : resultOpacity;
     node("result-opacity").value = String(Math.round(activeOpacity * 100));
     node("result-opacity-value").textContent = node("result-opacity").value + "%";
-    node("result-opacity").disabled = masking ? true : overlay ? canvas.contentCount() === 0 : !hasResult;
-    node("opacity-target-label").textContent = masking ? t("局部模式：成图固定不透明", "Local mode: result stays opaque") : overlay ? t("元素容器透明度", "Element layer opacity") : t("成图透明度", "Result opacity");
-    var visibility = node("result-visibility"); visibility.disabled = masking || !hasResult; visibility.setAttribute("aria-pressed", String(resultVisible));
-    visibility.setAttribute("aria-label", resultVisible ? t("隐藏成图", "Hide result") : t("显示成图", "Show result"));
-    visibility.querySelector("i").className = "fa-solid " + (resultVisible ? "fa-eye" : "fa-eye-slash");
+    node("result-opacity").disabled = masking ? false : overlay ? canvas.contentCount() === 0 : !hasResult;
+    node("opacity-target-label").textContent = masking ? t("蒙版层显示（0 或 100）", "Mask layer (0 or 100)") : overlay ? t("元素容器透明度", "Element layer opacity") : t("成图透明度", "Result opacity");
+    var visibility = node("result-visibility"); visibility.disabled = masking ? false : !hasResult; visibility.setAttribute("aria-pressed", String(shown));
+    visibility.setAttribute("aria-label", masking ? (maskVisible ? t("隐藏蒙版层", "Hide the mask layer") : t("显示蒙版层", "Show the mask layer")) : (resultVisible ? t("隐藏成图", "Hide result") : t("显示成图", "Show result")));
+    visibility.querySelector("i").className = "fa-solid " + (shown ? "fa-eye" : "fa-eye-slash");
   }
   function syncAuto() {
     var button = node("auto-toggle"); button.setAttribute("aria-pressed", String(app.state.autoGenerate));

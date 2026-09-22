@@ -5,8 +5,7 @@
   var network = app.platform.hermit;
   var t = app.i18n && app.i18n.text || function (zh) { return zh; };
   var PROTOCOLS = [
-    { id: "cvp", name: "CVP 插件（推荐）", description: "连接装有 VibeDraw 插件的 ComfyUI。插件自带快速生图 / 局部重绘 / 放大绘制三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。" },
-    { id: "a1x-image", name: "A1X 设备原生接口", description: "兼容 A1X 掌机自带的图片任务接口，适合还没装 VibeDraw 插件的存量设备。" },
+    { id: "cvp", name: "ComfyUI Vibedraw Plugin（推荐）", description: "连接装有 VibeDraw 插件的 ComfyUI。插件自带快速生图 / 局部重绘 / 放大绘制三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。" },
     { id: "openai-images", name: "OpenAI Images 兼容", description: "兼容 /v1/images/generations 与 /v1/images/edits，适合云端与兼容网关。" },
     { id: "sd-webui", name: "SD WebUI / Forge", description: "兼容 /sdapi/v1/img2img，适合局域网 Stable Diffusion WebUI 或 Forge。" },
     { id: "stability", name: "Stability AI", description: "兼容 Stable Image v2beta 的 Control Sketch 与 Generate 接口。" }
@@ -130,9 +129,9 @@
     var requestHeaders = headers(config, ""), fields = { prompt: input.prompt, output_format: "png" }, files = [];
     requestHeaders.Accept = "image/*";
     if (config.inputMode !== "text") {
-      var image = u.dataUrlParts(input.imageDataUrl);
+      var image = u.dataUrlParts(input.imageDataUrl), extension = image.mime === "image/jpeg" ? "jpg" : image.mime === "image/webp" ? "webp" : "png";
       fields.control_strength = String(u.clamp(input.strength, 0, 1));
-      files.push({ name: "image", filename: "vibedraw.png", mime: image.mime, bytes: image.bytes });
+      files.push({ name: "image", filename: "vibedraw." + extension, mime: image.mime, bytes: image.bytes });
     } else {
       fields.aspect_ratio = aspect(config.width, config.height);
     }
@@ -149,125 +148,6 @@
     if (ratio > 1.35) return "16:9";
     if (ratio < 0.74) return "9:16";
     return "1:1";
-  }
-
-  function a1xRoot(endpoint) {
-    var value = u.stripSlash(endpoint), marker = value.indexOf("/api/a1x-h3");
-    return marker >= 0 ? value.slice(0, marker) : value;
-  }
-  function a1xSeed(value) {
-    var seed = Number(value);
-    if (Number.isInteger(seed) && seed >= 0 && seed <= 9007199254740991) return seed;
-    return Math.floor(Math.random() * 9007199254740991);
-  }
-  function a1xStageDeadline(promise, timeoutMs, label) {
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      var timer = setTimeout(function () {
-        if (settled) return;
-        settled = true; reject(new Error(label + "超时"));
-      }, timeoutMs);
-      promise.then(function (value) {
-        if (settled) return;
-        settled = true; clearTimeout(timer); resolve(value);
-      }, function (error) {
-        if (settled) return;
-        settled = true; clearTimeout(timer); reject(error);
-      });
-    });
-  }
-  function a1xTransient(error) { return !error || !error.status && /超时|timed?\s*out|timeout/i.test(String(error.message || error)); }
-  async function a1xRetry(task, label, timeoutMs, attempts) {
-    var maximum = Math.max(1, Number(attempts) || 2), lastError;
-    for (var attempt = 0; attempt < maximum; attempt += 1) {
-      try { return await a1xStageDeadline(task(), timeoutMs, label); }
-      catch (error) {
-        lastError = error;
-        if (!a1xTransient(error) || attempt === maximum - 1) throw error;
-        app.events.emit("generation:progress", t("网络未响应，正在重试“" + label + "”…", "Network did not respond. Retrying " + label + "…"));
-        await u.sleep(350);
-      }
-    }
-    throw lastError;
-  }
-  function a1xPayload(config, input, assetId) {
-    var dream = config.model === "dreamshaper8_lcm_blended_img2img_sd15" || config.model === "dreamshaper8_lcm_scribble_sd15" || config.slot === "quick";
-    var steps = [2, 4, 8].indexOf(Number(config.steps)) >= 0 ? Number(config.steps) : (dream ? 4 : 8);
-    var referenceStrength = Number(input.strength);
-    if (!Number.isFinite(referenceStrength)) referenceStrength = 0.8;
-    var prompt = String(input.prompt || "").trim() || "Faithfully refine the reference image while preserving its composition and content.";
-    var payload = {
-      mode: "image_generate",
-      prompt: prompt,
-      negative_prompt: input.negativePrompt || "",
-      engine_profile: dream ? "dreamshaper8_lcm_blended_img2img_sd15" : (steps === 8 ? "flux2_klein_4b_base_nvfp4" : "flux2_klein_4b_distilled_nvfp4"),
-      sampling_steps: steps,
-      guidance_scale: dream ? u.clamp(Number(config.guidanceScale) || 2, 1, 3) : 1,
-      reference_strength: u.clamp(referenceStrength, 0, 2),
-      inputs: { image_references: assetId ? [assetId] : [] },
-      output: { aspect_ratio: "1:1", resolution_tier: dream ? "compact512" : "native" },
-      seed: a1xSeed(input.seed)
-    };
-    if (dream) {
-      // Temporary single-path diagnostic: lightly mix one blurred copy over
-      // the untouched canvas, then feed only that image to LCM img2img.
-      // A higher UI sketch strength means less denoising and more preservation.
-      payload.reference_strength = u.clamp(1.05 - (u.clamp(referenceStrength, 0, 2) * 0.65), 0.25, 0.85);
-      payload.input_blur_radius = 3;
-      payload.input_blur_sigma = 1.2;
-      payload.input_blur_mix = 0.25;
-    }
-    if (!dream) payload.reference_megapixels = 1;
-    return payload;
-  }
-  async function a1xUpload(config, input) {
-    if (config.inputMode === "text") return "";
-    var dimension = config.slot === "quality" ? 1024 : 512;
-    app.events.emit("generation:progress", t("正在上传 " + dimension + " × " + dimension + " 参考图…", "Uploading the " + dimension + " × " + dimension + " reference…"));
-    var image = u.dataUrlParts(input.imageDataUrl), extension = image.mime === "image/jpeg" ? ".jpg" : image.mime === "image/webp" ? ".webp" : ".png";
-    var requestHeaders = headers(config, image.mime);
-    var url = a1xRoot(config.endpoint) + "/api/a1x-h3/v2/assets?filename=" + encodeURIComponent("vibedraw-" + Date.now() + extension) + "&kind=image";
-    var response = await a1xRetry(function () { return network.request({ url: url, method: "POST", headers: requestHeaders, bodyBytes: image.bytes, contentType: image.mime, timeoutMs: config.timeoutMs }); }, t("上传画布", "canvas upload"), 8000, 2);
-    ensureOk(response, requestHeaders);
-    var payload = u.parseJson(response.bodyText || "", null);
-    if (!payload || !payload.asset_id) throw new Error("A1X 未返回参考图素材 ID");
-    return payload.asset_id;
-  }
-  async function a1xGenerate(config, input) {
-    var root = a1xRoot(config.endpoint), assetId = await a1xUpload(config, input);
-    var requestHeaders = headers(config, "application/json");
-    requestHeaders["Idempotency-Key"] = u.id("vibedraw");
-    var requestBody = JSON.stringify(a1xPayload(config, input, assetId));
-    var renderName = config.slot === "quality" ? "Flux.2" : "DreamShaper";
-    app.events.emit("generation:progress", t("正在创建 " + renderName + " 任务…", "Starting the " + renderName + " task…"));
-    var created = await a1xRetry(function () { return network.requestJson({
-      url: root + "/api/a1x-h3/v2/jobs", method: "POST", headers: requestHeaders,
-      bodyText: requestBody, timeoutMs: config.timeoutMs
-    }); }, t("创建 A1X 任务", "A1X job creation"), 8000, 2);
-    var job = created.data, jobId = job && job.job_id;
-    if (!jobId) throw new Error("A1X 未返回任务 ID");
-    var deadline = Date.now() + (Number(config.timeoutMs) || 180000);
-    while (Date.now() < deadline && ["succeeded", "failed", "cancelled"].indexOf(job.state) < 0) {
-      await u.sleep(700);
-      app.events.emit("generation:progress", t(renderName + " 正在生成…", renderName + " is generating…"));
-      var polled = await a1xRetry(function () { return network.requestJson({ url: root + "/api/a1x-h3/v2/jobs/" + encodeURIComponent(jobId), method: "GET", headers: headers(config), timeoutMs: 15000 }); }, t("查询 A1X 任务", "A1X job status"), 6000, 2);
-      job = polled.data;
-    }
-    if (!job || job.state !== "succeeded") {
-      if (job && job.state === "failed") {
-        var detail = job.error && (job.error.message || job.error.error) || "A1X 图片任务执行失败";
-        throw new Error(String(detail));
-      }
-      if (job && job.state === "cancelled") throw new Error("A1X 图片任务已取消");
-      throw new Error("A1X 生成超时，任务可能仍在设备队列中");
-    }
-    var output = job.outputs && job.outputs[0];
-    if (!output || !output.url) throw new Error("A1X 任务完成，但没有图片输出");
-    app.events.emit("generation:progress", t("正在读取生成图片…", "Loading the generated image…"));
-    var downloaded = await a1xRetry(function () { return network.request({ url: root + output.url, method: "GET", headers: headers(config), timeoutMs: 60000 }); }, t("下载 A1X 成图", "A1X image download"), 10000, 2);
-    var result = await responseImage(downloaded, headers(config));
-    result.metadata = job;
-    return result;
   }
 
   // --------------------------------------------------------------------- //
@@ -361,7 +241,6 @@
   async function generate(config, input) {
     validate(config);
     if (config.protocol === "cvp") return cvpGenerate(config, input);
-    if (config.protocol === "a1x-image") return a1xGenerate(config, input);
     if (config.protocol === "openai-images") return openAiGenerate(config, input);
     if (config.protocol === "sd-webui") return sdWebuiGenerate(config, input);
     if (config.protocol === "stability") return stabilityGenerate(config, input);
@@ -371,8 +250,6 @@
     if (!config) throw new Error("模型配置不存在");
     u.validateEndpoint(config.endpoint);
     if (config.protocol === "stability" && !config.apiKey && !u.isPrivateHost(new URL(config.endpoint).hostname)) throw new Error(app.i18n ? app.i18n.text("请先填写 API Key", "Enter an API key first") : "请先填写 API Key");
-    var a1xSize = config && config.slot === "quality" ? 1024 : 512;
-    if (config.protocol === "a1x-image" && (Number(config.width) !== a1xSize || Number(config.height) !== a1xSize || [2, 4, 8].indexOf(Number(config.steps)) < 0)) throw new Error("A1X 图片模型要求实时 512 × 512、渲染 1024 × 1024，并支持 2 / 4 / 8 步");
     if (config.protocol === "openai-images" && !config.model) throw new Error("请填写图像模型 ID");
     if (config.protocol === "cvp" && !(Number(config.width) >= 256 && Number(config.width) <= 2048 && Number(config.height) >= 256 && Number(config.height) <= 2048)) throw new Error(app.i18n ? app.i18n.text("画幅需为 256–2048", "Use a canvas size between 256 and 2048") : "画幅需为 256–2048");
     u.parseHeaders(config.customHeaders || "");
@@ -380,33 +257,6 @@
   async function test(config) {
     validate(config);
     var root, url;
-    if (config.protocol === "a1x-image") {
-      root = a1xRoot(config.endpoint);
-      var capabilityHeaders = headers(config);
-      var capability = await network.requestJson({ url: root + "/api/a1x-h3/v2/capabilities", method: "GET", headers: capabilityHeaders, timeoutMs: Math.min(Number(config.timeoutMs) || 30000, 30000) });
-      var profiles = capability.data && capability.data.profiles || {};
-      var dream = config.model === "dreamshaper8_lcm_blended_img2img_sd15" || config.model === "dreamshaper8_lcm_scribble_sd15" || config.slot === "quick";
-      var selectedProfiles, imageModel;
-      function supportsTier(tier, expectedSize) {
-        var resolutions = capability.data && capability.data.image_resolutions || {}, sizes = resolutions[tier] && resolutions[tier]["1:1"];
-        if (Array.isArray(sizes) && sizes[0] === expectedSize && sizes[1] === expectedSize) return true;
-        return Array.isArray(imageModel.allowed_resolution_tiers) && imageModel.allowed_resolution_tiers.indexOf(tier) >= 0;
-      }
-      if (dream) {
-        var dreamProfile = profiles.dreamshaper8_lcm_blended_img2img_sd15;
-        imageModel = capability.data && capability.data.image_models && capability.data.image_models.lcm_blended_img2img_sd15;
-        if (!dreamProfile || !dreamProfile.qualification || dreamProfile.qualification.image_generate !== "qualified" || !imageModel || !Array.isArray(imageModel.allowed_steps) || [2, 4, 8].some(function (step) { return imageModel.allowed_steps.indexOf(step) < 0; }) || !supportsTier("compact512", 512)) throw new Error("A1X 当前未开放 DreamShaper8 LCM 的 2 / 4 / 8 步与 compact512 能力");
-        selectedProfiles = ["dreamshaper8_lcm_blended_img2img_sd15"];
-      } else {
-        var distilled = profiles.flux2_klein_4b_distilled_nvfp4, base = profiles.flux2_klein_4b_base_nvfp4;
-        imageModel = capability.data && capability.data.image_models && capability.data.image_models.flux2;
-        if (!distilled || !base || !distilled.qualification || distilled.qualification.image_generate !== "qualified" || !base.qualification || base.qualification.image_generate !== "qualified" || !imageModel || !Array.isArray(imageModel.allowed_steps) || [2, 4, 8].some(function (step) { return imageModel.allowed_steps.indexOf(step) < 0; }) || !supportsTier("native", 1024)) throw new Error("A1X 当前未开放 Flux.2 Klein 4B 的 2 / 4 / 8 步与 1024 × 1024 native 能力");
-        selectedProfiles = ["flux2_klein_4b_distilled_nvfp4", "flux2_klein_4b_base_nvfp4"];
-      }
-      var jobs = await network.request({ url: root + "/api/a1x-h3/v2/jobs?limit=1", method: "GET", headers: capabilityHeaders, timeoutMs: Math.min(Number(config.timeoutMs) || 30000, 30000) });
-      ensureOk(jobs, capabilityHeaders);
-      return { ok: true, status: jobs.status, profiles: selectedProfiles };
-    }
     if (config.protocol === "openai-images") { root = openAiRoot(config.endpoint); url = root + "/models"; }
     else if (config.protocol === "sd-webui") url = u.stripSlash(config.endpoint) + "/sdapi/v1/sd-models";
     else if (config.protocol === "cvp") url = cvpBase(config.endpoint) + "/vibedraw/v1/capabilities";
@@ -443,14 +293,6 @@
       value.refStrength = name === "inpaint" ? 0.3 : rendered ? 0.75 : 0.55;
       value.growMaskBy = 8;
       value.timeoutMs = rendered ? 240000 : 60000;
-    } else if (protocol === "a1x-image") {
-      value.endpoint = "http://192.168.124.31:8188";
-      value.model = rendered ? "flux2_klein_4b_base_nvfp4" : "dreamshaper8_lcm_blended_img2img_sd15";
-      value.inputMode = "sketch";
-      value.width = value.height = rendered ? 1024 : 512;
-      value.steps = rendered ? 8 : 4;
-      value.guidanceScale = rendered ? 1 : 2;
-      value.timeoutMs = rendered ? 180000 : 90000;
     } else if (protocol === "openai-images") {
       value.endpoint = "https://api.openai.com/v1";
       value.model = "gpt-image-1";
@@ -485,9 +327,6 @@
       cvpBase: cvpBase,
       cvpTask: cvpTask,
       cvpStrength: cvpStrength,
-      a1xRoot: a1xRoot,
-      a1xPayload: a1xPayload,
-      a1xRetry: a1xRetry,
       jsonImage: jsonImage,
       aspect: aspect
     }

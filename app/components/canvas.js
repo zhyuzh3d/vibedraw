@@ -513,7 +513,7 @@
     context.drawImage(contentCanvas, 0, 0);
     if (maskContext) {
       maskContext.clearRect(0, 0, WIDTH, WIDTH);
-      if (state.maskMode) {
+      if (state.maskMode && state.maskVisible !== false) {
         maskContext.drawImage(maskContentCanvas, 0, 0);
         if (isMaskStroke(drawingObject)) drawStroke(maskContext, drawingObject, true);
       }
@@ -708,10 +708,12 @@
     }
     targetContext.save(); targetContext.globalAlpha = opacity == null ? 1 : opacity; targetContext.drawImage(layer, 0, 0); targetContext.restore();
   }
-  function captureComposition() {
+  function captureComposition(overrides) {
     var currentResultOpacity = Number(state.resultOpacity);
     if (!Number.isFinite(currentResultOpacity)) currentResultOpacity = 1;
-    var masking = Boolean(state.maskMode);
+    // A local-redraw caller can assert the mode instead of inheriting it, so its
+    // reference image can never silently fall back to the bare sketch.
+    var masking = overrides && overrides.localMode != null ? Boolean(overrides.localMode) : Boolean(state.maskMode);
     return {
       background: state.background || "#ffffff",
       localMode: masking,
@@ -761,23 +763,38 @@
     render(); commit(); app.events.emit("tool", "select");
     return object;
   }
-  async function composeInput(options) {
+  function composeInput(options) {
     options = options || {};
     var targetSize = Number(options.size) || WIDTH;
-    var output = await renderComposition(captureComposition(), targetSize);
-    return encodeCanvas(output, options);
+    // withResult marks a local redraw: its reference has to be the decorated
+    // result, never the bare sketch, so the mode is asserted rather than inherited.
+    var composition = captureComposition(options.withResult ? { localMode: true } : null);
+    return composeWithinBudget(composition, targetSize, options.withResult === true, options);
   }
-  async function composeVisibleInput(options) {
+  function composeVisibleInput(options) {
     options = options || {};
     var targetSize = Number(options.size) || WIDTH;
-    var output = await renderComposition(captureComposition(), targetSize, true);
-    return encodeCanvas(output, options);
+    return composeWithinBudget(captureComposition(), targetSize, true, options);
   }
   function encodeCanvas(output, options) {
     var mime = options.mime || "image/png", quality = Number(options.quality) || 0.82;
     var encoded = output.toDataURL(mime, quality), maxBytes = Number(options.maxBytes) || 0;
-    while (maxBytes && mime === "image/jpeg" && app.utils.dataUrlByteLength(encoded) > maxBytes && quality > 0.45) {
+    // maxBytes counts the characters of the encoded data URL, because that is
+    // exactly what ends up inside the request body.
+    while (maxBytes && mime === "image/jpeg" && encoded.length > maxBytes && quality > 0.45) {
       quality = Math.max(0.45, quality - 0.1); encoded = output.toDataURL(mime, quality);
+    }
+    return encoded;
+  }
+  // Quality alone cannot always reach the budget (a photo-like canvas stays
+  // large in any JPEG quality), so the size steps down too.
+  async function composeWithinBudget(composition, targetSize, visible, options) {
+    var size = targetSize, output = await renderComposition(composition, size, visible);
+    var encoded = encodeCanvas(output, options), maxBytes = Number(options.maxBytes) || 0;
+    for (var attempt = 0; maxBytes && encoded.length > maxBytes && attempt < 6 && size > 256; attempt++) {
+      size = Math.max(256, Math.round(size * 0.8));
+      output = await renderComposition(composition, size, visible);
+      encoded = encodeCanvas(output, options);
     }
     return encoded;
   }
@@ -831,7 +848,7 @@
   }
   function load(saved) {
     if (!saved) return;
-    ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"].forEach(function (key) {
+    ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "maskVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"].forEach(function (key) {
       if (saved[key] !== undefined) state[key] = saved[key];
     });
     state.objects = saved.objects || [];

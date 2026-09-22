@@ -57,6 +57,14 @@ docs/performance.md        HermitApp 性能设计与诊断不变量
 
 安装 `comfyui-plugin/`（或发布的 `release/vibedraw-comfyui-plugin-v1.0.0.zip`）后，在 ComfyUI 工作流中放置一个 `VibeDraw Input` 和一个 `VibeDraw Output` 节点。Input 输出 `prompt`、`negative_prompt`、参考图、蒙版、`seed`、`ref_strength`、`steps`、`width` 和 `height`；用户把它们接到自己的文本编码、采样、重绘或 ControlNet 节点。最终图片接到 `VibeDraw Output`。
 
+插件包用 `python3 tools/package-plugin.py` 生成（`--check` 只校验不写入），产物是确定性 zip：固定时间戳、固定条目顺序，解压到 ComfyUI 的 `custom_nodes/` 即可使用。官网「应用广场 / VibeDraw 安装」卡片里的 **下载 ComfyUI 插件** 按钮直接指向这个 zip：
+
+```
+https://hermit.airen.life/downloads/vibedraw/vibedraw-comfyui-plugin-v1.0.0.zip
+```
+
+官网副本放在 `hermitweb/public/downloads/vibedraw/`，与仓库 `release/` 里的字节一致（sha256 `a98fdbb7…15adc9`）。
+
 VibeDraw 将 API-format workflow 和当前输入提交到插件的 `/vibedraw/v1/jobs`，插件再调用 ComfyUI 原生队列。VibeDraw 轮询插件任务状态，并直接从 ComfyUI `/view` 读取输出图片；checkpoint、节点结构和具体模型仍由用户工作流控制。
 
 ## 验证

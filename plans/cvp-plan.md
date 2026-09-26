@@ -246,3 +246,85 @@ P0 → P1 → P2 → P3 → P4 → P5 → P6(每步之后都跑一次离线测�
 P8(应用) → P9(热更新到设备)。
 
 P1–P5 都在本机完成并可离线自检; P6 通过后才首次触碰设备, 避免在设备上反复试错。
+
+---
+
+## 5. 第二轮(2026-09-27, 插件 2.2.0 → 2.3.0): 画幅不再锁死在清单上
+
+### 5.1 起因(业主两条原则)
+
+> CVP 插件应该不锁定具体分辨率, 只枚举 ComfyUI 能够输出的模型支持的分辨率。
+> CVP 提供分辨率, happ 根据实际情况选用。
+
+`2.2.0` 的 `render` 只公布九个方形(512²…1024²), 客户端要一张 9:16 竖幅只能拿到方图。根因是**画幅被写成了手写清单**。
+
+### 5.2 改法: 约束算枚举, 校验按约束
+
+每个能力新增 `size` 域, 声明**模型的约束**:
+
+| 字段 | 含义 |
+|---|---|
+| `step` | 对齐步长(latent 8× × VAE 8×, 取 64 作安全上界) |
+| `min_short_edge` / `max_long_edge` | 最短边 / 最长边 |
+| `max_pixels` | 单次生成的像素预算 |
+| `budgets` | 推荐枚举要覆盖的预算档(如放大目标的 1MP / 4MP) |
+| `aspects` | 模型能接受的比例 |
+
+- `capabilities.sizes(capability)` 按「预算 × 比例 → 两条边各自 `sqrt` 再向下对齐」**算出**推荐枚举;
+- `capabilities.fits(size, domain)` 按域判上下界与对齐;
+- 广播给客户端的 `values.size` 只是**推荐枚举**, 不是唯一可选值; 能力条目另播报 `size_domain` 让客户端自己算;
+- `validate_values` 改成按域判(不走清单)。
+
+**关键取舍: 枚举要保住历史纹理。** 老客户端只读 `values.size`, 而 vibedraw 应用当时还只取 `sizes[0]`, 所以 `quick`/`inpaint` 首项仍是 512²、`upscale` 仍是 `[[1024,1024],[2048,2048]]`、`render` 首项仍是 1:1 的 1024²。
+
+`render` 实际公布的枚举: `[[1024,1024],[768,1344],[1344,768],[832,1152],[1152,832],[832,1216],[1216,832],[1536,640]]`。
+
+### 5.3 另外两项
+
+- **`render.needs.image = false`**: 带参考图 = 参考图编辑, 不带 = 纯文生图。依据是核心节点 `TextEncodeQwenImage21` 的 `images` 参数本身就是 `io.Autogrow.Input(..., min=0)` —— 不带参考图是模型明确支持的路径, 不是"漏了参数"。`server.py` 相应改成"判带了没带"。
+- **新增家族选项 `reference_edge`**(参考图送进编码器前缩到多大)。默认 **1024 = 核心节点的默认值** —— 出厂默认不带部署选择, 某台机器的权宜值只写设备设置文件。**它不影响出图画幅**。
+
+### 5.4 应用侧的连带修复(同一个方形假定)
+
+画幅不再是单一数字之后, 三处"只认一个边"的代码会**静默**把插件给的竖幅改成方图(不报错, 只是形状错):
+
+| 位置 | 原状 | 现状 |
+|---|---|---|
+| `app/services/providers.js` `cvpSizes()` | 只返回 `pair[0]` | 返回整对 `[width, height]`, 过滤掉非正数 |
+| 同上 `preset()` | `value.width = value.height = sizes[0]` | 取 `sizes[0]` 的**两个**边分别赋给 width / height |
+| `app/components/settings.js` | 按钮 `data-aspect-size`(单值)且标签硬写 `1:1`; 点击时 `width = height = value` | 按钮带 `data-aspect-width` / `data-aspect-height`; 标签用 `providers.aspect(w, h)` 算 |
+
+`aspect()` 一并从 `internals` 提到公开面(它本来就是纯函数), 免得设置面板再抄一份比例阈值。
+`app/services/image-engine.js` 的渲染结果校验本来就同时比 width 与 height, 不用改。
+
+`tools/verify.mjs` 新增 5 条源码门禁把这条不变量钉住: 画幅必须成对携带、preset 必须取两个边、按钮必须存两个数、锁定行不许再出现写死的 `1:1`。
+
+### 5.5 验证与部署
+
+- `node tools/verify.mjs --source-only` ✅ —— `providers.test.mjs`(含新的成对断言) / `workspace` / `performance` / `assets` 四套全 ok, 24 个运行期文件;
+- **`tools/package.py --check` 会红**(`release content mismatch: app/components/settings.js`)—— 这条门禁要求发布包与源码逐字节一致, 而按既定纪律**改代码不发版**: 不升 happ 版本、不生成新的 happ 发布包(见 §3.2)。所以它保持在"等下一次发版"的状态, 不是回归;
+- 插件侧离线测试 `python3 comfyui-plugin/tests/test_spec.py` ✅(`ok (4 个能力,1 份输入 schema,1 条翻译记忆,旧文档 4 条插件)`);
+- A1X 部署: 备份到 `custom_nodes/vibedraw_comfy/.bak-20260927/` → 传 6 个文件 → 设备设置 `families.qwen_image_21.reference_edge = "512"` → `systemctl --user restart minimax-h3-comfy` → `curl --noproxy '*' http://192.168.124.31:8189/cvp/info` 验收 `plugin.version 2.3.0` / `render.needs.image=false` / `render` 含 `[768,1344]` / 四个能力都有 `size_domain`;
+- 应用热更新: `sync-dir` → VibeDraw devRev **181 → 182**, `commitState: committed`; 回读设备端 `app/components/settings.js` 确认 `data-aspect-width` / `data-aspect-height` 在场且写死的 `<strong>1:1</strong>` 已消失。
+
+### 5.7 参考图被压扁：`ImageScale` 是强制拉伸, 参考图只能按面积缩（2026-09-27 第六批）
+
+业主在 chataxi 上报「画出来的照片比例不太对」, 追下来根因在**本插件**（不在应用侧）:
+
+- 2.3.0 新加的预缩节点 `graph.scale` = `ImageScale` + **`crop:"disabled"`** ⇒ 把源图**压/拉**进给定的 `width × height`, **不裁切**。只要目标框比例与源图不符, 图就被拉变形 —— 而画幅仍然是对的, 从成图上极难发现。
+- `reference_box(width, height, edge)` 又拿**画幅的比例**算框 ⇒ 3:4 的定妆照被压进当时那张方画幅的框里。
+- 反证: 2.2.0 的 `families/qwen_image.py` 共 156 行且**完全没有参考图这条路径**（`git show 2705ef0:…`）⇒ 这是 2.3.0 新引入的缺陷。核心节点自己用的是 `ratio = samples.shape[3] / samples.shape[2]`（参考图**自身**比例）+ `comfy.utils.common_upscale(..., "disabled")`, 本来就是保比例的, **是预缩破坏了它**。
+
+**修法**:
+
+- 新增 `graph.scale_to_pixels(source, megapixels, step=32)` → `ImageScaleToTotalPixels`（吃**面积预算**, 比例永远是源图自己的, 再对齐到 32）。
+- `reference_box(width, height, edge)` → `reference_megapixels(edge)`（`edge² / 1048576`）; 随之删掉 `import math`。
+- 判据: **参考图 / 输入图一律按面积缩**; 只有 img2img 那种必须与采样 latent 对齐的才用硬目标框（`checkpoint.py` 的 `graph.scale` 保持不动）。
+- A1X 上实测该节点可用: `/object_info/ImageScaleToTotalPixels` 的 `required = [image, megapixels, resolution_steps, upscale_method]`,`megapixels` FLOAT 0.01–16,`resolution_steps` INT 1–256; 容器内源码确认它走 `common_upscale(..., "disabled")`。
+- 数值自洽: 9:16 参考图 + `resolution=512` ⇒ 384×672, 与画幅 768×1344 同比例; `resolution=1024` ⇒ 768×1344, **恰好等于画幅**。
+- 离线测试同步: `tests/test_spec.py` 的 `check_render_accepts_no_reference` 改成断言节点 "11" 的 `class_type == "ImageScaleToTotalPixels"` / `megapixels == reference_megapixels(512)` / `resolution_steps == 32`。
+- A1X 部署: 备份 `.bak-20260927b/`（含设置文件）→ 传 `families/graph.py` 与 `families/qwen_image.py` → 清 `__pycache__` → `systemctl --user restart minimax-h3-comfy` → `/cvp/info` 复验。设备设置 `reference_edge` 同时由 `512` 提到 `1024`（业主直接定, 代价是参考图 latent token 约 4×, 且已有的 0.59MP 定妆照会被放大到约 1MP 预算 —— 要吃满 1MP 得同时把定妆照提到 768×1344 并改走 `bodyLogicalFileId` 传输）。
+
+### 5.6 回滚
+
+插件照 §3.4(备份目录 `.bak-20260927/` 拷回 + 重启容器)。应用侧热更新前的版本仍在设备上, 可直接回推。

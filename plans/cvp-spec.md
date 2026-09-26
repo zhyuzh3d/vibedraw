@@ -173,7 +173,8 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 | `prompt.language` | `"en"` = 文本编码器只吃英文(触发第 5 节的自动翻译); `"any"` = 能读中文。 |
 | `needs` | 哪些输入是必需的, 决定第 4 节里哪些字段必填。 |
 | `ignores` | **本能力声明了但不会生效的字段**。客户端不应发送; 若发送, 服务器忽略并在 `job.ignored` 回显。 |
-| `values` | 该能力允许的**枚举值**(画幅、步数)。同一字段在能力之间只有允许集合不同, 含义不变。 |
+| `values` | 该能力允许的**枚举值**(画幅、步数)。同一字段在能力之间只有允许集合不同, 含义不变。`values.size` 是**推荐枚举**(按 `size_domain` 算出来的菜单), 不是唯一可选值。 |
+| `size_domain` | 画幅的**约束**: `step`(对齐步长)、`min_short_edge`、`max_long_edge`、`max_pixels`。校验按它判, 客户端也可以用它自己算一张合法画幅。 |
 | `defaults` | 客户端不传时的取值。 |
 | `models` | **实现挂载点**: 每个角色一个条目。这就是"对内可替换"的接口 —— 客户端只看到"哪个角色、什么文件、装了没"。 |
 | `ready` | 所有角色都就绪。`false` 时提交会得到 `no_model`。 |
@@ -192,14 +193,16 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 
 ### 3.2 当前能力清单(样板实现)
 
-| `id` | `category` | `prompt.language` | 画幅 | 步数 | 参考图权重默认 |
+| `id` | `category` | `prompt.language` | 画幅(`size_domain` → 推荐枚举) | 步数 | 参考图权重默认 |
 |---|---|---|---|---|---|
-| `quick` | `["realtime"]` | `en` | 512² | 2/4/6/8 | 0.55 |
-| `inpaint` | `["edit"]` | `en` | 512² | 4/6/8/12 | 0.30 |
-| `upscale` | `["upscale"]` | `en` | 1024²,2048² | 4/8/12/16/20 | 0.75 |
-| `render` | `["render"]` | `any` | 512²…1024²(步进64) | 12/16/20/25/30/40 | 0.95 |
+| `quick` | `["realtime"]` | `en` | `step 64` / `≤768` / `≤512²` → 512², 576×384, 384×576 | 2/4/6/8 | 0.55 |
+| `inpaint` | `["edit"]` | `en` | 同 `quick`(蒙版必须与画布同尺寸) | 4/6/8/12 | 0.30 |
+| `upscale` | `["upscale"]` | `en` | `step 64` / `512…2560` / `≤2048²` → 1024², 2048² | 4/8/12/16/20 | 0.75 |
+| `render` | `["render"]` | `any` | `step 64` / `256…1536` / `≤1 MP` → 1024², **768×1344**, 1344×768, 832×1152, 1152×832, 832×1216, 1216×832, 1536×640 | 12/16/20/25/30/40 | 0.95 |
 
-`render` 的 `aliases` 为 `["qwen"]` —— 它**曾经**用模型名当 id, 那是错的示范, 保留别名只为不断掉老客户端。
+**画幅不锁死在清单上。** `size_domain` 说的是**模型能出什么**, `values.size` 是按它算出来的推荐菜单; 校验认的是 `size_domain`(见第 4 节), 所以菜单外但合法的画幅照样收。`render` 的 9:16 落在 768 × 1344, 就是 1 MP 预算下的结果。
+
+`render` 的 `aliases` 为 `["qwen"]` —— 它**曾经**用模型名当 id, 那是错的示范, 保留别名只为不断掉老客户端。它的 `needs.image = false`: **带参考图是参考图编辑, 不带就是纯文生图** —— 一个能力的两种用法。
 
 ---
 
@@ -214,14 +217,14 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 | `negative_prompt` | string | 否 | 不想出现的内容。能力在 `ignores` 里声明了则忽略并回显 | — |
 | `image_base64` | string | 看 `needs.image` | 参考图, base64 PNG/JPEG, 允许带 `data:` 前缀 | `400 bad_image` |
 | `mask_base64` | string | 看 `needs.mask` | 蒙版, **黑底白区, 白 = 要重画** | `400 bad_mask` |
-| `size` | [int, int] | 否 | 输出画幅。**必须是本能力 `values.size` 里的值** | `400 unsupported_size` |
+| `size` | [int, int] | 否 | 输出画幅。**必须落在本能力 `size_domain` 里**(对齐步长的倍数、在边长与像素上下界内); `values.size` 只是推荐枚举 | `400 unsupported_size` |
 | `steps` | int | 否 | 采样步数。**必须是本能力 `values.steps` 里的值** | `400 unsupported_steps` |
 | `seed` | int | 否 | `0` = 每次不同; 同一个值可复现 | 负数 → `400 bad_request` |
 | `ref_strength` | number | 否 | **0.05–0.95, 越大越贴近参考图** | 夹到边界并在 `job` 回显 |
 
 两条统一规则, 全规范只写一次:
 
-1. **枚举值越界 = 报错**(`size` / `steps`)。
+1. **画幅按约束判、步数按枚举判**。`size` 在 `size_domain` 内就收(所以客户端可以自己算一张); `steps` 不在 `values.steps` 里 → `unsupported_steps`。
 2. **连续量越界 = 夹到边界并回显**(`ref_strength`)。
 
 ### 4.1 `ref_strength` 为什么要这样定
@@ -298,7 +301,7 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 | `unauthorized` | 401 | 密码不对, 未入队 |
 | `bad_request` | 400 | 请求体不是合法 JSON / 字段类型不对 |
 | `unsupported_capability` | 400 | 不认识这个能力 |
-| `unsupported_size` | 400 | 画幅不在该能力的 `values.size` 里 |
+| `unsupported_size` | 400 | 画幅不在该能力的 `size_domain` 里(步长不齐 / 越界) |
 | `unsupported_steps` | 400 | 步数不在该能力的 `values.steps` 里 |
 | `bad_image` | 400 | 参考图不是合法 base64 PNG/JPEG |
 | `bad_mask` | 400 | 需要蒙版但没给 / 不合法 |

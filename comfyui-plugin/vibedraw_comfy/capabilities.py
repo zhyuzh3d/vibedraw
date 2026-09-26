@@ -25,6 +25,7 @@ shared field.
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -74,6 +75,83 @@ CATEGORIES = {
 REF_STRENGTH_RANGE = (0.05, 0.95)
 GROW_MASK_RANGE = (0, 64)
 
+#: 画幅不是一张手写清单，而是一条**模型约束**。每个能力用 ``size`` 声明自己的：
+#:
+#: * ``step``            —— 模型要求的对齐步长（latent 8× × VAE 8×，取 64 是安全上界）
+#: * ``min_short_edge``  —— 允许的最短边
+#: * ``max_long_edge``   —— 允许的最长边
+#: * ``max_pixels``      —— 一次生成允许的像素预算
+#: * ``budgets``         —— 推荐枚举要覆盖的几个预算（比如放大目标的 1MP / 4MP 两档）
+#: * ``aspects``         —— 模型能接受的比例
+#:
+#: 广播给客户端的 ``values.size`` 由这份约束**算出来**（:func:`sizes`），校验也按它判
+#: （:func:`fits`）。两件事用同一个来源，所以清单外但合法的画幅不会被拒 —— 这正是
+#: "不锁定具体分辨率" 的意思：插件给菜单，客户端按自己的需要取。
+SIZE_STEP = 64
+
+
+def _aligned_down(value: float, step: int, floor: int) -> int:
+    """向下取到 ``step`` 的倍数，且不低于 ``floor``。"""
+    step = max(1, int(step))
+    return max(int(floor), int(value // step) * step)
+
+
+def sizes(capability: dict[str, Any]) -> list[list[int]]:
+    """这张能力推荐的画幅枚举 —— 由模型约束算出来，不是手写的。
+
+    每个 (比例 × 预算) 出两张边，各自取 ``sqrt(预算 × 自己的份额)`` 再向下对齐。两边都
+    向下取整，所以乘积一定不超过预算，而比例就是声明里那个 —— 9:16 在 1MP 预算下正好
+    是 768 × 1344。
+    """
+    domain = capability.get("size") or {}
+    step = int(domain.get("step") or SIZE_STEP)
+    short = int(domain.get("min_short_edge") or step)
+    long_edge = int(domain.get("max_long_edge") or 0)
+    aspects = domain.get("aspects") or [[1, 1]]
+    out: list[list[int]] = []
+    for budget in domain.get("budgets") or []:
+        for aspect in aspects:
+            width_share, height_share = int(aspect[0]), int(aspect[1])
+            width = _aligned_down(math.sqrt(budget * width_share / height_share), step, short)
+            height = _aligned_down(math.sqrt(budget * height_share / width_share), step, short)
+            if long_edge and max(width, height) > long_edge:
+                factor = long_edge / max(width, height)
+                width = _aligned_down(width * factor, step, step)
+                height = _aligned_down(height * factor, step, step)
+            pair = [width, height]
+            if pair not in out:
+                out.append(pair)
+    return out
+
+
+def fits(size: Any, domain: dict[str, Any]) -> bool:
+    """这个画幅在模型的能力范围内吗 —— 认约束，不认清单。"""
+    if not isinstance(size, (list, tuple)) or len(size) < 2:
+        return False
+    try:
+        width, height = int(size[0]), int(size[1])
+    except (TypeError, ValueError):
+        return False
+    if width <= 0 or height <= 0:
+        return False
+    step = int(domain.get("step") or SIZE_STEP)
+    if width % step or height % step:
+        return False
+    if min(width, height) < int(domain.get("min_short_edge") or step):
+        return False
+    long_edge = int(domain.get("max_long_edge") or 0)
+    if long_edge and max(width, height) > long_edge:
+        return False
+    budget = int(domain.get("max_pixels") or 0)
+    if budget and width * height > budget:
+        return False
+    return True
+
+
+def values(capability: dict[str, Any]) -> dict[str, Any]:
+    """广播出去的那一份 ``values``：画幅是算出来的，步数照样是枚举。"""
+    return {"size": sizes(capability), "steps": list(capability["values"]["steps"])}
+
 _FIELD_HELP = {
     "prompt": {
         "zh": "画面描述。是否需要先译成英文由能力的 prompt.language 决定。",
@@ -92,8 +170,8 @@ _FIELD_HELP = {
         "en": "Mask, black background with a white area; white means repaint.",
     },
     "size": {
-        "zh": "输出画幅 [宽, 高]。只能取本能力 values.size 里列出的值。",
-        "en": "Output canvas [width, height]; only the values in this capability's values.size.",
+        "zh": "输出画幅 [宽, 高]。要满足本能力 size 域的对齐步长与像素预算; values.size 是推荐枚举, 不是唯一可选值。",
+        "en": "Output canvas [width, height]; it must fit this capability's size domain (alignment step and pixel budget). values.size is the recommended menu, not the only legal values.",
     },
     "steps": {
         "zh": "采样步数。只能取本能力 values.steps 里列出的值。",
@@ -191,7 +269,12 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "prompt": {"language": "en"},
         "needs": {"prompt": True, "image": True, "mask": False},
         "ignores": [],
-        "values": {"size": [[512, 512]], "steps": [2, 4, 6, 8]},
+        "values": {"steps": [2, 4, 6, 8]},
+        "size": {
+            # SD1.5 系 checkpoint 训练在 512², 预算就按 512² 给; 再大不会报错, 只会糊。
+            "step": 64, "min_short_edge": 256, "max_long_edge": 768, "max_pixels": 262144,
+            "budgets": [262144], "aspects": [[1, 1], [4, 3], [3, 4]],
+        },
         "defaults": {"size": [512, 512], "steps": 8, "ref_strength": 0.55},
         "roles": ["checkpoint"],
         "family": "checkpoint",
@@ -212,7 +295,12 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "prompt": {"language": "en"},
         "needs": {"prompt": True, "image": True, "mask": True},
         "ignores": [],
-        "values": {"size": [[512, 512]], "steps": [4, 6, 8, 12]},
+        "values": {"steps": [4, 6, 8, 12]},
+        "size": {
+            # 局部重绘与速写共用一个 checkpoint, 蒙版必须与画布同尺寸, 域完全一致。
+            "step": 64, "min_short_edge": 256, "max_long_edge": 768, "max_pixels": 262144,
+            "budgets": [262144], "aspects": [[1, 1], [4, 3], [3, 4]],
+        },
         "defaults": {"size": [512, 512], "steps": 6, "ref_strength": 0.30, "grow_mask_by": 8},
         "roles": ["checkpoint"],
         "family": "checkpoint",
@@ -233,7 +321,15 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "prompt": {"language": "en"},
         "needs": {"prompt": True, "image": True, "mask": False},
         "ignores": [],
-        "values": {"size": [[1024, 1024], [2048, 2048]], "steps": [4, 8, 12, 16, 20]},
+        "values": {"steps": [4, 8, 12, 16, 20]},
+        "size": {
+            # 放大这里"模型"给不出上限, 给上限的是显存, 所以域照设备自己公布的口径来:
+            # 长边 ≤ 2560、像素 ≤ 2048²。两个预算就是原来那两个档位(1MP / 4MP),
+            # 算出来的枚举与手写的那两张完全一样; 比例只列 1:1 —— 放大目标跟随源图比例,
+            # 客户端要 9:16 这类画幅直接发, 校验认的是约束不是这张菜单。
+            "step": 64, "min_short_edge": 512, "max_long_edge": 2560, "max_pixels": 4194304,
+            "budgets": [1048576, 4194304], "aspects": [[1, 1]],
+        },
         "defaults": {"size": [1024, 1024], "steps": 8, "ref_strength": 0.75},
         "roles": ["checkpoint"],
         "family": "checkpoint",
@@ -252,14 +348,21 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
             "en": "Repaint the canvas into a finished picture up to 1024 px. Far heavier than a sketch model.",
         },
         "prompt": {"language": "any"},
-        "needs": {"prompt": True, "image": True, "mask": False},
+        # 带参考图就是参考图编辑, 不带就是纯文生图 —— 同一个能力的两种用法, 不是两个能力。
+        # 底层 TextEncodeQwenImage21 的 images 输入 min=0, 所以"没有参考图"是它明确支持的
+        # 路径 (这也正是它第三个输出的空 latent 会用 resolution 兜底的原因)。
+        "needs": {"prompt": True, "image": False, "mask": False},
         # Sampled at cfg 1: there is nothing to steer away from, so the field is
         # declared ignored rather than quietly accepted and dropped.
         "ignores": ["negative_prompt"],
-        "values": {
-            "size": [[512, 512], [576, 576], [640, 640], [704, 704], [768, 768],
-                     [832, 832], [896, 896], [960, 960], [1024, 1024]],
-            "steps": [12, 16, 20, 25, 30, 40],
+        "values": {"steps": [12, 16, 20, 25, 30, 40]},
+        "size": {
+            # Qwen-Image 2.1 出图按像素预算走, 1MP 也就是它自己的原生档:
+            # 9:16 落在 768 × 1344 (1 032 192 px)。比例列的是模型能接受的那些,
+            # 21:9 这种极端比例在预算内自然落到 1536 × 640。
+            "step": 64, "min_short_edge": 256, "max_long_edge": 1536, "max_pixels": 1048576,
+            "budgets": [1048576],
+            "aspects": [[1, 1], [9, 16], [16, 9], [3, 4], [4, 3], [2, 3], [3, 2], [21, 9]],
         },
         "defaults": {"size": [1024, 1024], "steps": 20, "ref_strength": 0.95},
         "roles": ["unet", "clip", "vae"],
@@ -329,23 +432,20 @@ def clamp_ref_strength(value: Any, fallback: float) -> float:
 
 
 def validate_values(capability: dict[str, Any], size: Any, steps: Any) -> tuple[list[int], int]:
-    """The enumeration check, shared by every capability.
+    """画幅按约束判、步数按枚举判 —— 两类字段本来就不是一回事。
 
-    Raises ``unsupported_size`` / ``unsupported_steps`` — the same codes the
-    document promises, so a client that renders its form from ``values`` can
-    never build a request this rejects.
+    ``size`` 认的是 :func:`fits` 那条约束（对齐步长 + 边与像素上下界），所以任何合法
+    画幅都收，不只是 ``values.size`` 里列出来的那几个 —— 客户端可以按自己的需要算一个。
+    ``steps`` 仍然是枚举，越界报 ``unsupported_steps``。
     """
-    sizes = [[int(value[0]), int(value[1])] for value in capability["values"]["size"]]
     if size is None:
-        chosen = list(capability["defaults"]["size"])
-    elif isinstance(size, (list, tuple)) and len(size) >= 2:
+        chosen = [int(capability["defaults"]["size"][0]), int(capability["defaults"]["size"][1])]
+    else:
         try:
             chosen = [int(size[0]), int(size[1])]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, IndexError, KeyError):
             raise ValueError("unsupported_size") from None
-    else:
-        raise ValueError("unsupported_size")
-    if chosen not in sizes:
+    if not fits(chosen, capability.get("size") or {}):
         raise ValueError("unsupported_size")
 
     allowed = [int(value) for value in capability["values"]["steps"]]
@@ -380,7 +480,10 @@ def entry(capability: dict[str, Any], models: list[dict[str, Any]]) -> dict[str,
         "prompt": deepcopy(capability["prompt"]),
         "needs": deepcopy(capability["needs"]),
         "ignores": list(capability["ignores"]),
-        "values": deepcopy(capability["values"]),
+        "values": deepcopy(values(capability)),
+        # 画幅的**约束**也要播报: 客户端不该只会在菜单里挑, 它想按自己的需要算一张
+        # 合法画幅时, 得先知道对齐步长和上下界是哪几个数。
+        "size_domain": deepcopy(capability.get("size") or {}),
         "defaults": clean_defaults(capability),
         "models": models,
         "ready": bool(models) and all(item.get("ready") for item in models),
@@ -425,6 +528,7 @@ def document(*, resolve: Resolver, authorized: bool, auth_required: bool, transl
 __all__ = [
     "API_ROOT", "API_SCHEMA", "CAPABILITIES", "CATEGORIES", "DISCOVERY_SCHEMA", "ENDPOINTS",
     "GROW_MASK_RANGE", "INPUT_SCHEMAS", "LEGACY_ROOT", "PLUGIN_ID", "PLUGIN_LABEL",
-    "REF_STRENGTH_RANGE", "ROLE_FOLDERS", "SPEC", "capabilities", "clamp_ref_strength",
-    "clean_defaults", "document", "entry", "find", "ids", "names", "spec_of", "validate_values",
+    "REF_STRENGTH_RANGE", "ROLE_FOLDERS", "SIZE_STEP", "SPEC", "capabilities",
+    "clamp_ref_strength", "clean_defaults", "document", "entry", "find", "fits",
+    "ids", "names", "sizes", "spec_of", "validate_values", "values",
 ]

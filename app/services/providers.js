@@ -184,9 +184,15 @@
       return (item.aliases || []).some(function (alias) { return String(alias).toLowerCase() === wanted; });
     })[0] || null;
   }
+  //: The canvases a capability publishes, as whole [width, height] pairs. The
+  //: canvas belongs to the plugin and it is not always square — cvp/1 2.3.0
+  //: publishes 768×1344 for render — so a client that keeps only the first
+  //: number silently rewrites the shape it was offered into a square.
   function cvpSizes(name) {
     var capability = cvpCapability(name), pairs = capability && capability.values && capability.values.size;
-    return (pairs || []).map(function (pair) { return Number(pair && pair[0]); }).filter(function (value) { return Number.isFinite(value) && value > 0; });
+    return (pairs || []).map(function (pair) {
+      return [Number(pair && pair[0]), Number(pair && pair[1])];
+    }).filter(function (pair) { return pair[0] > 0 && pair[1] > 0; });
   }
   function cvpDefault(name, field) {
     var capability = cvpCapability(name), defaults = capability && capability.defaults, value = defaults ? defaults[field] : null;
@@ -369,10 +375,14 @@
       // client has already read decides the starting canvas, steps and weight.
       // With nothing read yet these fall back to the same numbers as before.
       var sizes = cvpSizes(name), steps = cvpDefault(name, "steps"), strength = cvpDefault(name, "ref_strength");
+      // The first canvas the capability publishes is the starting one; its
+      // width and height are taken together, never mirrored from one number.
+      var canvas = sizes.length ? sizes[0] : null;
       value.endpoint = "http://192.168.1.2:8188";
       value.model = "";
       value.inputMode = "sketch";
-      value.width = value.height = sizes.length ? sizes[0] : (rendered ? 1024 : 512);
+      value.width = canvas ? canvas[0] : (rendered ? 1024 : 512);
+      value.height = canvas ? canvas[1] : (rendered ? 1024 : 512);
       value.steps = steps == null ? (name === "inpaint" ? 6 : 8) : Number(steps);
       value.refStrength = strength == null ? (name === "inpaint" ? 0.3 : rendered ? 0.75 : 0.55) : Number(strength);
       value.growMaskBy = 8;
@@ -410,6 +420,10 @@
     //: this to offer the sizes the plugin really accepts instead of a guess.
     capability: cvpCapability,
     capabilitySizes: cvpSizes,
+    //: The shape label a canvas gets ("9:16", "16:9", "1:1"). It lives next to
+    //: the sizes so the settings sheet can name the aspect without keeping a
+    //: second copy of the ratio thresholds.
+    aspect: aspect,
     internals: {
       openAiRoot: openAiRoot,
       cvpBase: cvpBase,

@@ -70,10 +70,14 @@ DEFAULTS: dict[str, Any] = {
         "render": {"sampler": "euler", "scheduler": "simple", "cfg": 1.0},
     },
     # Per-family knobs that are genuinely deployment tuning rather than contract.
-    # ``auto`` / ``default`` are what the model asks for; a box that is short on
-    # memory sets ``int8`` here instead of the plugin assuming it.
+    # The shipped defaults carry no deployment: ``auto`` and the node's own
+    # ``reference_edge`` are what the model's author would pick, and a box that
+    # is short on memory writes ``int8`` / a smaller encode budget here instead
+    # of the plugin assuming it.  (``reference_edge`` 是参考图的编码面积预算,
+    # 原生引擎管它叫 ``reference_resolution``: 参考图缩到"约 edge² 像素"再进编码器,
+    # **出图画幅不受它影响**。)
     "families": {
-        "qwen_image_21": {"cache_device": "auto", "cache_dtype": "default"},
+        "qwen_image_21": {"cache_device": "auto", "cache_dtype": "default", "reference_edge": "1024"},
     },
     "translate": {
         "enabled": True,
@@ -169,8 +173,9 @@ def _merge(base: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
                 continue
             for key in list(slot):
                 value = entry.get(key)
-                if isinstance(value, str) and value.strip():
-                    slot[key] = value.strip()
+                text = _family_option(value)
+                if text:
+                    slot[key] = text
 
     translation = stored.get("translate")
     if isinstance(translation, dict):
@@ -223,13 +228,25 @@ def translate() -> dict[str, Any]:
     }
 
 
+def _family_option(value: Any) -> str:
+    """One family option as text — the shape a node input takes.
+
+    Numbers are welcome here because ``reference_edge`` reads far better as
+    ``512`` than as ``"512"``; booleans are not, because they would silently
+    become "True".
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    return str(value).strip()
+
+
 def family_options(name: str) -> dict[str, str]:
     """Deployment tuning for one family, as ``{option: value}``."""
     stored = load().get("families") or {}
     entry = stored.get(str(name or "").strip())
     if not isinstance(entry, dict):
         return {}
-    return {key: str(value) for key, value in entry.items() if isinstance(value, str) and value}
+    return {key: text for key, text in ((key, _family_option(value)) for key, value in entry.items()) if text}
 
 
 def update(**fields: Any) -> dict[str, Any]:
@@ -298,8 +315,9 @@ def update(**fields: Any) -> dict[str, Any]:
                 if not isinstance(slot, dict):
                     slot = target[str(name)] = {}
                 for key, value in entry.items():
-                    if isinstance(value, str):
-                        slot[str(key)] = value.strip()
+                    text = _family_option(value)
+                    if text:
+                        slot[str(key)] = text
 
         translation = fields.get("translate")
         if isinstance(translation, dict):

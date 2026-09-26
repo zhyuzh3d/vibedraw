@@ -96,13 +96,14 @@
     // plugin's answer, not this file's: the last /cvp/info is asked first and
     // the familiar pair is only the fallback for a plugin never yet contacted.
     var known = name === "upscale" ? app.services.providers.capabilitySizes(name) : [];
-    var choices = known.length ? known : (name === "upscale" ? [1024, 2048] : []);
+    var choices = known.length ? known : (name === "upscale" ? [[1024, 1024], [2048, 2048]] : []);
     var sizes = name === "upscale"
-      ? '<span class="aspect-sizes">' + choices.map(function (value) {
-        return '<button type="button" data-aspect-size="' + value + '" class="' + (Number(model.width) === value ? "is-active" : "") + '">' + value + " × " + value + '</button>';
+      ? '<span class="aspect-sizes">' + choices.map(function (pair) {
+        var picked = Number(model.width) === pair[0] && Number(model.height) === pair[1];
+        return '<button type="button" data-aspect-width="' + pair[0] + '" data-aspect-height="' + pair[1] + '" class="' + (picked ? "is-active" : "") + '">' + pair[0] + " × " + pair[1] + '</button>';
       }).join("") + '</span>'
       : '<strong>' + model.width + " × " + model.height + '</strong>';
-    return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>1:1</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
+    return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>' + app.services.providers.aspect(model.width, model.height) + '</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
   }
   function renderModels() {
     var model = draft[slot] || draft.quick, protocol = model.protocol, cvp = protocol === "cvp";
@@ -141,10 +142,13 @@
       '<div class="segmented model-tabs">' + tabs + '</div>' + card + footer() });
     bindChoices(root);
     root.querySelectorAll("[data-slot-tab]").forEach(function (button) { button.onclick = function () { slot = button.dataset.slotTab; renderModels(); }; });
-    root.querySelectorAll("[data-aspect-size]").forEach(function (button) {
+    root.querySelectorAll("[data-aspect-width]").forEach(function (button) {
       button.onclick = function () {
-        var value = Number(button.dataset.aspectSize);
-        draft[slot].width = value; draft[slot].height = value; renderModels();
+        // Both numbers come from the button: mirroring one of them would turn a
+        // portrait canvas the plugin offered back into a square.
+        draft[slot].width = Number(button.dataset.aspectWidth);
+        draft[slot].height = Number(button.dataset.aspectHeight);
+        renderModels();
       };
     });
     root.querySelectorAll("[name]").forEach(function (field) {

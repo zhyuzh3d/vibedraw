@@ -19,6 +19,8 @@ What it locks down:
   ``txt-ref23dgs`` splits on its *last* ``2``;
 * aliases (``qwen`` is ``render``) and the two boundary rules: an enumeration
   rejects an unknown value, a continuous value is clamped;
+* 画幅域 —— 枚举由模型约束算出来（render 的 9:16 就是 768 × 1344），校验认那条约束
+  而不是这张菜单，所以清单外但合法的画幅也收；``render`` 不带参考图 = 纯文生图；
 * the translation memory survives a process restart, and its key is the source
   text and nothing else, so a better engine still hits;
 * the shipped defaults carry no deployment: an empty translator address and a
@@ -35,6 +37,7 @@ import sys
 import tempfile
 import types
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -107,7 +110,7 @@ def check_information_document() -> None:
 
     # 1) 协议版本在响应体里,不在路径里
     check(document["spec"] == "cvp/1", "协议版本必须放在响应体里")
-    check(document["plugin"]["version"] == "2.2.0", "插件版本要通过文档播报")
+    check(document["plugin"]["version"] == "2.3.0", "插件版本要通过文档播报")
     check(document["auth"]["required"] is True and document["auth"]["authorized"] is True, "auth 要如实反映传入值")
 
     # 2) 能力必须是四个语义 id,模型名不许当 id
@@ -419,10 +422,109 @@ def check_legacy_projection() -> None:
     json.dumps(old, ensure_ascii=False)
 
 
+def check_size_domain() -> None:
+    """画幅不是手写清单: 枚举由模型约束算出来, 校验按同一条约束判。
+
+    业主 2026-09-27 的要求 —— 插件不该锁死具体分辨率, 只要把模型能出的画幅枚举出来,
+    由客户端按自己的需要挑。所以这里同时锁两件事: 枚举里有 9:16 的 768 × 1344,
+    以及"清单外但合法的画幅也收"。
+    """
+    render = capabilities.spec_of("render")
+    menu = capabilities.sizes(render)
+    check([1024, 1024] in menu, f"render 的枚举里要有 1:1, 得到 {menu}")
+    check([768, 1344] in menu, f"render 的枚举里必须有 9:16 的 768 × 1344, 得到 {menu}")
+    check(menu[0] == [1024, 1024], "1:1 排第一: 只取首项的客户端仍然拿到方形")
+
+    # 枚举与默认值自己都必须在域内 —— 否则客户端照着菜单选都会被拒。
+    for capability in capabilities.CAPABILITIES.values():
+        for pair in capabilities.sizes(capability):
+            check(capabilities.fits(pair, capability["size"]),
+                  f"{capability['id']}: 推荐的 {pair} 自己不合法")
+        check(capabilities.fits(capability["defaults"]["size"], capability["size"]),
+              f"{capability['id']}: 默认画幅 {capability['defaults']['size']} 不在域内")
+
+    # 放大那两个档位是旧客户端和 vibedraw 自己的界面都认的数字, 不许变。
+    check(capabilities.sizes(capabilities.spec_of("upscale")) == [[1024, 1024], [2048, 2048]],
+          "放大的两个档位还是 1024 / 2048")
+
+    # 认约束不认清单: 896 × 1152 合法但不在菜单里, 要收; 越界的四条都要拒。
+    check(capabilities.validate_values(render, [896, 1152], 20)[0] == [896, 1152],
+          "清单外但合法的画幅必须收下")
+    for size in ([513, 513], [2048, 2048], [128, 128], [1600, 1600]):
+        try:
+            capabilities.validate_values(render, size, 20)
+            raise AssertionError(f"越界画幅必须拒: {size}")
+        except ValueError as error:
+            check(str(error) == "unsupported_size", f"{size} 该报 unsupported_size, 得到 {error}")
+
+    # 约束本身也要播报出去, 否则客户端只能照着菜单挑, "不锁定"就只是句空话。
+    entry = capabilities.entry(render, [])
+    check(entry["size_domain"] == render["size"], "画幅域要与能力表同源")
+    check(entry["values"]["size"] == menu, "播报的枚举要与 sizes() 一致")
+    for key in ("step", "min_short_edge", "max_long_edge", "max_pixels"):
+        check(key in entry["size_domain"], f"画幅域缺 {key}")
+    json.dumps(entry, ensure_ascii=False)
+
+
+def check_render_accepts_no_reference() -> None:
+    """render 是"一个能力两种用法": 带参考图 = 参考图编辑, 不带 = 纯文生图。"""
+    spec = capabilities.spec_of("render")
+    check(spec["needs"]["image"] is False, "render 不带参考图是合法用法, 不是漏了参数")
+    check(spec["needs"]["mask"] is False, "render 依然不接受蒙版")
+
+    def build(image: str, reference_edge: Any = None) -> dict:
+        options: dict[str, Any] = {"cache_device": "auto", "cache_dtype": "int8"}
+        if reference_edge is not None:
+            options["reference_edge"] = reference_edge
+        return families.build(
+            spec=spec,
+            models={"unet": "u.safetensors", "clip": "c.safetensors", "vae": "v.safetensors"},
+            sampling={"sampler": "euler", "scheduler": "simple", "cfg": 1.0},
+            image=image, prompt="一只猫", negative_prompt="", seed=1, steps=20,
+            size=(768, 1344), ref_strength=0.95, options=options)
+
+    plain = build("")
+    check("images.image_1" not in plain["5"]["inputs"], "没有参考图就不许给编码器挂一张")
+    check(not any(node.get("class_type") == "LoadImage" for node in plain.values()),
+          "没有参考图就不该建 LoadImage")
+    check(plain["6"]["inputs"]["width"] == 768 and plain["6"]["inputs"]["height"] == 1344,
+          "出图画幅由采样 latent 决定, 与有没有参考图无关")
+
+    family = families.get("qwen_image_21")
+    defaulted = build("vibedraw/ref.png")
+    check(defaulted["5"]["inputs"]["resolution"] == 1024,
+          "没给设置时按核心节点自己的默认预算 —— 出厂默认不带部署选择")
+    check("reference_edge" in family.OPTIONS, "reference_edge 要是这个家族的设置项")
+    check(settings.DEFAULTS["families"]["qwen_image_21"]["reference_edge"] == "1024",
+          "出厂默认就是核心节点的默认值")
+
+    # 设置文件里那一项是文本(也可能被写成数字), 512 就是业主定的编码边长。
+    with_ref = build("vibedraw/ref.png", reference_edge="512")
+    check(with_ref["5"]["inputs"]["images.image_1"] == ["11", 0], "带参考图时编码器读缩放后的那一张")
+    check(with_ref["5"]["inputs"]["resolution"] == 512, "参考图的编码预算要按 reference_edge 交给节点")
+    # 参考图只能按面积缩。``ImageScale`` 吃硬目标框, 比例不符时会靠 crop:"disabled" 把图
+    # 拉伸进去 —— 业主报的"照片比例不对"就是这么来的(定妆照 9:16 被压进画幅的比例里)。
+    scaled = with_ref["11"]
+    check(scaled["class_type"] == "ImageScaleToTotalPixels",
+          f"参考图要按面积预算缩, 不能用硬目标框, 得到 {scaled['class_type']}")
+    check(scaled["inputs"]["megapixels"] == family.reference_megapixels(512),
+          "面积预算要等于 edge² 像素")
+    check(abs(scaled["inputs"]["megapixels"] * 1024 * 1024 - 512 * 512) <= 512,
+          f"512 的预算不该被放大, 得到 {scaled['inputs']['megapixels']} 百万像素")
+    check(scaled["inputs"]["resolution_steps"] == 32, "对齐到 32, 否则核心节点会再缩第二次")
+
+    settings.update(families={"qwen_image_21": {"reference_edge": 512}})
+    check(settings.family_options("qwen_image_21")["reference_edge"] == "512",
+          "设置文件里写数字 512 也要能用")
+    forget_settings()
+
+
 def main() -> None:
     check_information_document()
     check_capability_lookup()
     check_boundary_rules()
+    check_size_domain()
+    check_render_accepts_no_reference()
     check_translation_memory()
     check_settings()
     check_nodes_read_the_table()

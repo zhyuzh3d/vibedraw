@@ -67,6 +67,13 @@ assert.ok(providersJs.includes('id: "cvp"') && providersJs.includes("CVP_CAPABIL
 // client reads /cvp/info instead of assuming either.
 assert.ok(providersJs.includes("capability: capability") && !/task: task,/.test(providersJs), "a job must be submitted under its capability id, not the retired task field");
 assert.ok(providersJs.includes('"/cvp/info"') && providersJs.includes('cvpRemember') && providersJs.includes("capabilitySizes"), "testing the connection must read the plugin's information endpoint and keep what it says");
+// A canvas is a pair, never one number. The plugin stopped publishing squares
+// only in 2.3.0, so a client that keeps just the first number silently turns a
+// portrait 768×1344 into a square 768 — a wrong shape with no error anywhere.
+assert.ok(providersJs.includes("function cvpSizes") && providersJs.includes("return [Number(pair && pair[0]), Number(pair && pair[1])];"), "a published canvas must be carried as [width, height], not as its first number alone");
+assert.ok(providersJs.includes("var canvas = sizes.length ? sizes[0] : null;") && providersJs.includes("value.width = canvas ? canvas[0]") && providersJs.includes("value.height = canvas ? canvas[1]"), "the CVP preset must take both edges of the first published canvas instead of mirroring one of them");
+assert.ok(settingsJs.includes("data-aspect-width") && settingsJs.includes("data-aspect-height") && settingsJs.includes("draft[slot].height = Number(button.dataset.aspectHeight)"), "a canvas button must save both numbers, so choosing one cannot square a portrait canvas");
+assert.ok(!settingsJs.includes("<strong>1:1</strong>"), "the locked aspect row must name the real shape, not assume every canvas is square");
 assert.ok(providersJs.includes('"/jobs/" + encodeURIComponent(jobId) + "/progress"') && providersJs.includes("queue_position"), "the wait must poll the light progress call and may only count the queue");
 assert.ok(providersJs.includes('if (!cvpIgnores(capability, "negative_prompt"))') && providersJs.includes("function cvpIgnores"), "a capability that declares a field ignored must not be sent it");
 assert.ok(!providersJs.includes("detail.progress"), "a percentage must never be drawn from a progress response that does not carry one");

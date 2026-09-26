@@ -46,11 +46,11 @@ VibeDraw 是 HermitApp 的 happ,**不能脱离宿主单独安装**。
 `comfyui-plugin/vibedraw_comfy/` 是 VibeDraw 推荐使用的**统一本地接口**：把它放进 ComfyUI 的 `custom_nodes/` 并重启,客户端**不需要导出任何工作流 JSON**,只报能力名和当前画布。
 
 - 接口根路径 `/cvp`(不随版本变化),规范标识 `cvp/1`,新客户端第一步调公开的 `GET /cvp/info`,一次拿到能力清单,请求 schema,模型槽位与就绪状态。
-- 四个能力：`quick`(快速生图),`inpaint`(局部重绘,白 = 要重画),`upscale`(放大绘制),`render`(用 Qwen-Image 出成品图)。画幅与步数由插件按能力声明校验,`ref_strength` 是唯一的参考图权重入口(值域 0.05–0.95)。
+- 四个能力：`quick`(快速生图),`inpaint`(局部重绘,白 = 要重画),`upscale`(放大绘制),`render`(用 Qwen-Image 出成品图)。**画幅不锁死在一张手写清单上**：每个能力用 `size_domain` 声明自己的对齐步长,最短/最长边与像素预算,`values.size` 只是按这个域算出来的推荐枚举；请求里的 `size` 按域判,越界返 `unsupported_size`。步数按枚举判,`ref_strength` 是唯一的参考图权重入口(值域 0.05–0.95)。
 - 用户在 ComfyUI 里只需要操作一个节点 **VibeDraw 配置(Config)**：设访问密码,挑三套 checkpoint,以及高质量那一路的三个模型槽位。密码填错时请求在入队之前就返回 `401`,不会生图,密码留空则不校验。
 - 完整 HTTP 契约,配置字段与离线自测见 [comfyui-plugin/README.md](./comfyui-plugin/README.md)。
 
-插件版本只有一个出处：`comfyui-plugin/vibedraw_comfy/version.py` 的 `__version__`(当前 `2.2.0`)。仓库内构建发布包：
+插件版本只有一个出处：`comfyui-plugin/vibedraw_comfy/version.py` 的 `__version__`(当前 `2.3.0`)。仓库内构建发布包：
 
 ```sh
 python3 tools/package-plugin.py          # 生成确定性 zip(固定时间戳与条目顺序)
@@ -63,7 +63,7 @@ python3 tools/package-plugin.py --check  # 只校验不写入
 https://hermit.airen.life/downloads/vibedraw/vibedraw-comfyui-plugin-v2.0.1.zip
 ```
 
-> 说明：线上当前发布到 `v2.0.1`,而本仓库插件源码已是 `v2.2.0`,想用最新源码请自行用上面的命令打包。
+> 说明：线上当前发布到 `v2.0.1`,而本仓库插件源码已是 `v2.3.0`,想用最新源码请自行用上面的命令打包。
 
 ## 项目结构
 

@@ -54,7 +54,7 @@ assert.equal(internals.aspect(768, 1536), "9:16");
 // English, which fields do nothing — is read from here rather than assumed.
 const infoDocument = {
   spec: "cvp/1",
-  plugin: { id: "vibedraw_comfy", version: "2.2.0", label: { zh: "ComfyUI VibeDraw 插件", en: "ComfyUI VibeDraw Plugin" } },
+  plugin: { id: "vibedraw_comfy", version: "2.3.0", label: { zh: "ComfyUI VibeDraw 插件", en: "ComfyUI VibeDraw Plugin" } },
   auth: { required: true, authorized: true, scheme: "Bearer", header: "Authorization" },
   endpoints: { info: "/cvp/info", jobs: "/cvp/jobs" },
   capabilities: [
@@ -63,16 +63,19 @@ const infoDocument = {
       models: [{ role: "checkpoint", name: "DreamShaper8_LCM.safetensors", ready: true }] },
     { id: "upscale", aliases: [], prompt: { language: "en" }, ready: true, ignores: [],
       values: { size: [[1024, 1024], [2048, 2048]], steps: [4, 8, 12, 16, 20] }, defaults: { size: [1024, 1024], steps: 8, ref_strength: 0.75 }, models: [] },
+    // 2.3.0 stopped locking a hand-written list and publishes a portrait canvas
+    // for render; the client must carry it as a pair, not as one edge.
     { id: "render", aliases: ["qwen"], prompt: { language: "any" }, ready: true, ignores: ["negative_prompt"],
-      values: { size: [[1024, 1024]], steps: [20] }, defaults: { size: [1024, 1024], steps: 20, ref_strength: 0.95 }, models: [] }
+      values: { size: [[1024, 1024], [768, 1344], [1344, 768]], steps: [20] }, defaults: { size: [1024, 1024], steps: 20, ref_strength: 0.95 }, models: [] }
   ]
 };
 internals.cvpRemember(infoDocument);
 assert.equal(internals.cvpCapability("render").prompt.language, "any", "a capability that reads Chinese must say so");
 assert.equal(internals.cvpCapability("qwen").id, "render", "a capability must be found through its alias too");
-assert.deepEqual(JSON.parse(JSON.stringify(internals.cvpSizes("upscale"))), [1024, 2048], "the sizes the plugin accepts must come from the document");
-assert.deepEqual(JSON.parse(JSON.stringify(internals.cvpSizes("render"))), [1024]);
+assert.deepEqual(JSON.parse(JSON.stringify(internals.cvpSizes("upscale"))), [[1024, 1024], [2048, 2048]], "the canvases the plugin accepts must come from the document, as whole pairs");
+assert.deepEqual(JSON.parse(JSON.stringify(internals.cvpSizes("render"))), [[1024, 1024], [768, 1344], [1344, 768]], "a portrait canvas must survive as a pair; keeping only the first number would turn 768×1344 into a square 768");
 assert.equal(internals.cvpSizes("inpaint").length, 0, "an unknown capability offers nothing rather than a guess");
+assert.equal(internals.aspect(768, 1344), "9:16", "the shape label must be read off both numbers");
 assert.equal(internals.cvpIgnores("render", "negative_prompt"), true);
 assert.equal(internals.cvpIgnores("quick", "negative_prompt"), false);
 
@@ -107,7 +110,7 @@ const cvpTest = await context.vibedraw.services.providers.test({
 assert.equal(cvpTest.spec, "cvp/1");
 assert.equal(cvpTest.capability, "quick");
 assert.equal(cvpTest.promptLanguage, "en", "the card must read whether this capability needs English");
-assert.deepEqual(JSON.parse(JSON.stringify(cvpTest.sizes)), [512]);
+assert.deepEqual(JSON.parse(JSON.stringify(cvpTest.sizes)), [[512, 512]], "the card reads the canvases the plugin accepts, as pairs");
 assert.equal(cvpTest.authorized, true);
 await assert.rejects(() => context.vibedraw.services.providers.test({
   slot: "quick", protocol: "cvp", endpoint: "http://192.168.1.2:8188", apiKey: "wrong",

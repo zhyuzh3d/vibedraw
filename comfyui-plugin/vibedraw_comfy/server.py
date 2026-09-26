@@ -770,7 +770,12 @@ async def create_job(request: web.Request) -> web.Response:
         return _fail("busy", detail={"pending": len(pending)})
 
     try:
-        image_name = _store_image(body.get("image_base64") or body.get("image"), "bad_image")
+        # 参考图是可选的 —— 能力声明 needs.image=false 时, 不带它就是一次纯文生图,
+        # 不是"漏了参数"。所以这里判的是"带了没带": 带了才落盘, 带了但不合法照样报
+        # bad_image。needs.image 为真的能力在上面已经被拦下, 走不到这里。
+        image_name = ""
+        if _sent(body, "image_base64", "image"):
+            image_name = _store_image(body.get("image_base64") or body.get("image"), "bad_image")
         mask_name = ""
         if needs.get("mask"):
             mask_name = _store_image(body.get("mask_base64") or body.get("mask"), "bad_mask")

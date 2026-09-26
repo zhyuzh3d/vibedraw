@@ -34,7 +34,7 @@ VibeDraw 的**统一本地接口**。任何客户端（VibeDraw 本体、其他�
    curl -s http://127.0.0.1:8188/cvp/info
    ```
 
-   返回 JSON，且 `spec` 为 `cvp/1`、`plugin.version` 是你期望的那一版（当前 **2.2.0**）、每个能力的 `ready` 为 `true`，即成功。
+   返回 JSON，且 `spec` 为 `cvp/1`、`plugin.version` 是你期望的那一版（当前 **2.3.0**）、每个能力的 `ready` 为 `true`，即成功。
 
    信息端点**密码填错也照答**（此时 `auth.authorized` 为 `false`），所以"地址对不对"和"密码对不对"可以一次问清：能返回 JSON 说明地址通，`authorized` 说明密码。
 
@@ -55,20 +55,22 @@ VibeDraw 的**统一本地接口**。任何客户端（VibeDraw 本体、其他�
 
 配置写在 `custom_nodes/vibedraw_comfy/vibedraw_settings.json`（原子写、可手工编辑）；也可以直接用环境变量 `VIBEDRAW_PASSWORD` 覆盖密码（适合容器/CI）。
 
-**部署调参（手工编辑设置文件）**：`families.qwen_image_21.cache_device` / `cache_dtype` 控制 Qwen 的 KV 缓存（默认 `auto` / `default`，即模型作者的建议值）。**显存吃紧的机器**在设置文件里改成 `cache_dtype: "int8"` —— 插件不会替某台机器做这个假设，环境变量 `VIBEDRAW_TRANSLATE_URL` / `VIBEDRAW_TRANSLATE_MODEL` / `VIBEDRAW_TRANSLATE_DISABLED` 同理。
+**部署调参（手工编辑设置文件）**：`families.qwen_image_21` 下三项。`cache_device` / `cache_dtype` 控制 Qwen 的 KV 缓存（默认 `auto` / `default`，即模型作者的建议值）；**显存吃紧的机器**改成 `cache_dtype: "int8"`。`reference_edge` 是**参考图的编码预算**（原生引擎管它叫 `reference_resolution`）：参考图先按**面积**缩到"约 edge² 像素"再进编码器（`ImageScaleToTotalPixels`，**保持原图自己的比例**, 对齐到 32），默认 `1024`（核心节点自己的默认值），想省算力可以写小；**它不影响出图画幅**。参考图的**比例永远保留**：画幅由采样 latent 决定，参考图只说"长什么样" —— 按硬目标框去缩会把定妆照拉变形。插件不会替某台机器做这些假设 —— 环境变量 `VIBEDRAW_TRANSLATE_URL` / `VIBEDRAW_TRANSLATE_MODEL` / `VIBEDRAW_TRANSLATE_DISABLED` 同理。
 
 **密码错了会怎样**：请求在**入队之前**就被拦下，返回 `401 unauthorized`，**不会生图**。客户端拿到的是一句可读的中文提示，而不是一张画错的图。
 
 ## 四个能力
 
-能力 id 是**语义名**（`render`，不是 `qwen`），模型换了 id 不变。客户端只报 `capability`，画幅/步数由插件按能力声明校验，超出枚举直接 `400`：
+能力 id 是**语义名**（`render`，不是 `qwen`），模型换了 id 不变。客户端只报 `capability`；`steps` 是枚举，超出直接 `400`：
 
-| `capability` | `category` | 画幅 | 步数 | 参考图权重默认 | 提示词语言 | 说明 |
+**画幅不锁死在清单上。** 每个能力用 `size` 域声明**模型能出什么**（对齐步长 + 边长/像素上下界 + 比例集合），`values.size` 那份菜单是**按它算出来的**（推荐枚举，不是唯一可选值），校验也按同一条约束判 —— 所以菜单外但合法的画幅照样收，客户端可以按自己的需要算一个。竖构图那张：`render` 的 9:16 在 1MP 预算下就是 **768 × 1344**。
+
+| `capability` | `category` | 画幅（推荐枚举） | 步数 | 参考图权重默认 | 提示词语言 | 说明 |
 |---|---|---|---|---|---|---|
-| `quick` | `realtime` | 512×512 | 2 / 4 / 6 / 8 | 0.55 | **只认英文** | 把画布当参考图重绘一张速写稿 |
-| `inpaint` | `edit` | 512×512 | 4 / 6 / 8 / 12 | 0.30（另有 `grow_mask_by` 0–64 默认 8） | **只认英文** | **只重画白色蒙版区域**，其余原样保留 |
-| `upscale` | `upscale` | 1024×1024 或 2048×2048 | 4 / 8 / 12 / 16 / 20 | 0.75 | **只认英文** | 参考图按**原分辨率**（上限 1024）直接编码；只有目标大于上限时才 latent 放大。**不要退回"先缩到 512 再放大"**——那等于在采样器看到参考图之前先模糊它一轮，渲染出来会发软、像被重新演绎过。 |
-| `render` | `render` | 512–1024 见方，按 64 步进（9 档） | 12 / 16 / 20 / 25 / 30 / 40 | 0.95 | **中英文都行** | 用 Qwen-Image 2.1（官方 INT8）出 1024 以内的成品图。它**按参考图作画**而不是在画布上做图生图，构图由参考图本身带来；比草图模型重得多，单张约 45 秒；模型是 unet + clip + vae 三元组。它声明 `ignores: ["negative_prompt"]`（按 cfg 1 采样，反向提示词没有作用面）。 |
+| `quick` | `realtime` | 1:1 / 4:3 / 3:4（512² 预算，首项 512×512） | 2 / 4 / 6 / 8 | 0.55 | **只认英文** | 把画布当参考图重绘一张速写稿 |
+| `inpaint` | `edit` | 同上（蒙版必须与画布同尺寸） | 4 / 6 / 8 / 12 | 0.30（另有 `grow_mask_by` 0–64 默认 8） | **只认英文** | **只重画白色蒙版区域**，其余原样保留 |
+| `upscale` | `upscale` | 1024×1024 或 2048×2048（两个预算档；域内任何比例都收） | 4 / 8 / 12 / 16 / 20 | 0.75 | **只认英文** | 参考图按**原分辨率**（上限 1024）直接编码；只有目标大于上限时才 latent 放大。**不要退回"先缩到 512 再放大"**——那等于在采样器看到参考图之前先模糊它一轮，渲染出来会发软、像被重新演绎过。 |
+| `render` | `render` | 8 个比例，1MP 预算（1:1 = 1024²、**9:16 = 768×1344**、16:9 = 1344×768、21:9 = 1536×640…） | 12 / 16 / 20 / 25 / 30 / 40 | 0.95 | **中英文都行** | 用 Qwen-Image 2.1（官方 INT8）出成品图。**一个能力两种用法**：`needs.image = false`，**带参考图就是参考图编辑**（构图由参考图带来），**不带就是纯文生图**。比草图模型重得多，单张约 45 秒；模型是 unet + clip + vae 三元组。它声明 `ignores: ["negative_prompt"]`（按 cfg 1 采样，反向提示词没有作用面）。 |
 
 `render` 的 `aliases` 是 `["qwen"]`：它**曾经**拿模型名当 id，那是个错误示范，留别名只为不断掉已经发出去的客户端。
 
@@ -140,8 +142,8 @@ VibeDraw 的**统一本地接口**。任何客户端（VibeDraw 本体、其他�
 ```
 
 - `capability` 也可以用旧名 `task`（等价，两者同时出现时以 `capability` 为准）。
-- `image_base64`：参考图（画布）。`inpaint` 必带 `mask_base64`（**白 = 要重画**）。图片可直接给 data URL，插件自己解码；请求体上限 32 MB。
-- **两条统一规则**：枚举值（`size` / `steps`）越界 → `400`；连续量（`ref_strength`）越界 → 夹到边界并在 `job` 回显。
+- `image_base64`：参考图。**能力声明 `needs.image` 为真时才必带**；`render` 声明为假，所以**不带就是一次纯文生图**（带参考图则是参考图编辑）。`inpaint` 必带 `mask_base64`（**白 = 要重画**）。图片可直接给 data URL，插件自己解码；请求体上限 32 MB。
+- **两条统一规则**：`steps` 是枚举，越界 → `400 unsupported_steps`；画幅按能力的 `size` 域判（对齐步长 + 边长/像素上下界），越界 → `400 unsupported_size`，**域内的任何画幅都收，不只是 `values.size` 里那几个**；连续量（`ref_strength`）越界 → 夹到边界并在 `job` 回显。
 - 鉴权：`Authorization: Bearer <password>`（也接受 Basic 或 `X-VibeDraw-Password`）。密码为空时不需要。
 - 能力若在 `ignores` 里声明了某字段（如 `render` 的 `negative_prompt`），**不要发**；发了也会被忽略，并在 `job.ignored` 里回显，好让客户端提示用户而不是让人以为参数生效了。
 - 完成后的 `outputs[n].url` 已经是 `/cvp/jobs/...` 绝对路径，**客户端直接拼服务器地址去下就行，不要再拼一层**。

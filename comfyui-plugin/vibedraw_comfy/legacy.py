@@ -124,9 +124,9 @@ def job_schema(capability: dict[str, Any]) -> dict[str, Any]:
 
     properties["size"] = _property(
         "size", "array", items="integer", length=2,
-        enum=[list(value) for value in capability["values"]["size"]],
+        enum=[list(value) for value in capabilities.sizes(capability)],
         default=list(capability["defaults"]["size"]), required=False,
-        help={"zh": "画幅 [宽, 高],只能取 enum 里列出的值。", "en": "Canvas [width, height]; only the listed values are accepted."})
+        help={"zh": "画幅 [宽, 高]。enum 是推荐枚举, 合法画幅按对齐步长与像素预算判。", "en": "Canvas [width, height]. enum is the recommended menu; legality is decided by the alignment step and pixel budget."})
     properties["steps"] = _property(
         "steps", "integer", enum=[int(value) for value in capability["values"]["steps"]],
         default=int(capability["defaults"]["steps"]), required=False,
@@ -150,7 +150,7 @@ def plugin_entry(capability: dict[str, Any], models: list[dict[str, Any]]) -> di
         "english_only": english_only,
         "prompt_language": "en" if english_only else "any",
         "needs": deepcopy(capability["needs"]),
-        "sizes": [list(value) for value in capability["values"]["size"]],
+        "sizes": [list(value) for value in capabilities.sizes(capability)],
         "steps": {"allowed": [int(value) for value in capability["values"]["steps"]],
                   "default": int(capability["defaults"]["steps"])},
         "params": [dict(parameter) for parameter in params(capability)],
@@ -169,7 +169,7 @@ def task_entry(capability: dict[str, Any], models: list[dict[str, Any]]) -> dict
         "label": deepcopy(capability["label"]),
         "description": deepcopy(capability["description"]),
         "needs": deepcopy(capability["needs"]),
-        "sizes": [list(value) for value in capability["values"]["size"]],
+        "sizes": [list(value) for value in capabilities.sizes(capability)],
         "steps": {"allowed": [int(value) for value in capability["values"]["steps"]],
                   "default": int(capability["defaults"]["steps"])},
         "params": params(capability),

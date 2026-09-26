@@ -6,10 +6,6 @@
     app.events.on("error", function (error) { app.components.ui.toast(app.utils.cleanError(error), "error"); });
     app.components.settings.init();
     await app.services.store.loadConfig();
-    // Translations are stored separately from the config, and a prompt keeps its
-    // Chinese, so they have to come back before anything can render the English
-    // that the last save produced.
-    await app.services.translate.load();
     app.i18n.theme();
     app.state.negativePrompt = app.config.canvas.negativePrompt || "";
     ["resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity"].forEach(function (name) {

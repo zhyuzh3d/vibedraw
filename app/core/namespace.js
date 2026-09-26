@@ -4,7 +4,7 @@
   var app = global.vibedraw = global.vibedraw || {};
   var listeners = {};
 
-  app.version = "0.4.37";
+  app.version = "0.5.0";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];

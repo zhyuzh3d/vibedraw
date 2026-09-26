@@ -1,27 +1,39 @@
-"""Turn a Chinese prompt into English before it reaches ``CLIPTextEncode``.
+"""Turn a prompt a text encoder cannot read into one it can.
 
-Every checkpoint the plugin drives pairs with a text encoder trained on English
-(DreamShaper8 LCM carries CLIP-L inside the checkpoint, FLUX.2 Klein pairs with
-a Qwen3 text encoder), so Chinese characters arrive at the sampler as noise.
-This module is the single place that fixes that.  It is backed by a small local
-LLM behind an OpenAI-compatible ``/v1/chat/completions`` endpoint — Qwen3-0.6B
-served by ``llama.cpp`` in the reference deployment.
+Some capabilities run a text encoder that only understands English.  Which ones
+is declared per capability (``prompt.language``) and published in the discovery
+document, so this module never has to guess.
 
-Two rules keep it out of the way:
+**This runs inside the submit path.**  A client may translate ahead of time and
+show the user the result; a client that does nothing still gets a correct job,
+because the server fills the gap.  That is the whole point: a third-party tool
+that only knows how to POST a job must not be able to feed Chinese into a model
+that cannot read it.
 
-* a text without a CJK character is returned unchanged and never sent anywhere,
-  so an all-English prompt is never reworded and never pays for a round trip;
-* every failure returns the original text, because a missing translation must
-  not fail a job, and must never silently drop what the user wrote.
+Two things keep it cheap and safe:
 
-The app asks for a translation when a prompt is saved and then submits the same
-string on every redraw, so results are cached in process, keyed by source text.
+* **The memory is keyed by the source text and the target language, and nothing
+  else.**  A translation is a fact about two languages — "一只猫在沙发上" means "a
+  cat on a sofa" no matter which engine produced it, and the source text already
+  says which language it is in.  The engine, the model and the prompt revision
+  are recorded *beside* the entry as provenance, never as part of the key, so
+  swapping in a better backend still hits, while a future "refresh the whole
+  memory with the better engine" sweep can tell which entries came from where.
+* **The memory outlives the process.**  It is a file next to the settings, so
+  restarting ComfyUI or reinstalling the plugin does not throw it away.
+
+Failures never fail a job and never drop what the user wrote: every error path
+returns the original text.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
+import time
+from pathlib import Path
 from typing import Any, Iterable
 
 import aiohttp
@@ -30,10 +42,10 @@ from . import settings as settings_module
 
 MAX_TEXTS = 16
 MAX_TEXT_CHARS = 2000
-CACHE_LIMIT = 512
+MEMORY_SCHEMA = "cvp-translation-memory/v1"
+MEMORY_FILE = "vibedraw_translations.json"
+TARGET = "en"
 
-CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
-CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]+")
 THINK_TAIL = re.compile(r"</think>", re.IGNORECASE)
 LABEL = re.compile(r"^(?:english|translation|英文)\s*[:：]\s*", re.IGNORECASE)
 
@@ -55,19 +67,33 @@ SYSTEM_PROMPT = (
     "用户：水墨画风格，留白\nEnglish: ink wash painting style, negative space"
 )
 
-# Used only when the first answer still contains Chinese.
+#: Used only when the first answer still contains unreadable characters.
 RETRY_PROMPT = (
-    "Translate the user's Chinese text into English. "
+    "Translate the user's text into English. "
     "Answer with English words only, never a Chinese character, never an explanation."
 )
 
-_CACHE: dict[str, str] = {}
-_CACHE_LOCK = threading.RLock()
+#: Identifies the wording above, so an entry can say which revision produced it
+#: without that revision taking part in the lookup key.
+PROMPT_VERSION = hashlib.sha256((SYSTEM_PROMPT + RETRY_PROMPT).encode("utf-8")).hexdigest()[:12]
+
+_LOCK = threading.RLock()
+_MEMORY: dict[str, dict[str, Any]] | None = None
 
 
-def has_cjk(text: Any) -> bool:
-    """True when the text carries a character the image models cannot read."""
-    return bool(CJK.search(str(text or "")))
+# --------------------------------------------------------------------------- #
+# what needs translating
+# --------------------------------------------------------------------------- #
+
+def needs_translation(text: Any) -> bool:
+    """True when the text carries a character an English-only encoder cannot read.
+
+    Deliberately **not** "contains Chinese": Cyrillic, Greek, Arabic and Thai are
+    just as opaque to CLIP-L, and a check that only looked for CJK would pass
+    them straight through to come back as noise.  Whitespace is never a trigger,
+    so a trailing newline does not buy a round trip.
+    """
+    return any(not char.isascii() and not char.isspace() for char in str(text or ""))
 
 
 def enabled() -> bool:
@@ -75,16 +101,99 @@ def enabled() -> bool:
     return bool(config["enabled"] and config["url"])
 
 
-def describe() -> dict[str, Any]:
-    """What ``capabilities`` reports; never leaks the internal address."""
-    config = settings_module.translate()
-    return {
-        "available": bool(config["enabled"] and config["url"]),
-        "engine": str(config["model"] or ""),
-        "target": "en",
-        "rule": "text without CJK characters is passed through untouched",
-    }
+# --------------------------------------------------------------------------- #
+# the translation memory
+# --------------------------------------------------------------------------- #
 
+def memory_path() -> Path:
+    return settings_module.path().parent / MEMORY_FILE
+
+
+def _key(source: str, target: str) -> str:
+    """The lookup key: target language + source text.  Nothing else."""
+    return hashlib.sha256(f"{target}\x00{source}".encode("utf-8")).hexdigest()[:16]
+
+
+def _read_memory() -> dict[str, dict[str, Any]]:
+    try:
+        stored = json.loads(memory_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    entries = stored.get("entries") if isinstance(stored, dict) else None
+    if not isinstance(entries, dict):
+        return {}
+    return {str(key): value for key, value in entries.items() if isinstance(value, dict)}
+
+
+def _entries() -> dict[str, dict[str, Any]]:
+    global _MEMORY
+    with _LOCK:
+        if _MEMORY is None:
+            _MEMORY = _read_memory()
+        return _MEMORY
+
+
+def _flush() -> None:
+    """Write the memory out atomically, evicting the oldest past the limit."""
+    with _LOCK:
+        entries = _entries()
+        limit = int((settings_module.translate() or {}).get("memory_limit") or 0)
+        if limit and len(entries) > limit:
+            order = sorted(entries, key=lambda key: float(entries[key].get("created") or 0))
+            for key in order[: len(entries) - limit]:
+                entries.pop(key, None)
+        payload = {"schema": MEMORY_SCHEMA, "entries": entries}
+        destination = memory_path()
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n",
+                                 encoding="utf-8")
+            temporary.replace(destination)
+        except OSError:
+            # A memory that cannot be written is still a working memory.
+            pass
+
+
+def recall(source: str, target: str = TARGET) -> str:
+    entry = _entries().get(_key(source, target)) or {}
+    return str(entry.get("text") or "")
+
+
+def remember(pairs: Iterable[tuple[str, str, str]]) -> int:
+    """Store ``(source, text, engine)`` translations and flush once."""
+    config = settings_module.translate()
+    now = time.time()
+    stored = 0
+    with _LOCK:
+        entries = _entries()
+        for source, text, engine in pairs:
+            value = str(text or "").strip()
+            if not source or not value:
+                continue
+            entries[_key(source, TARGET)] = {
+                "source": source,
+                "target": TARGET,
+                "text": value,
+                # Provenance, not key material: lets a later sweep tell which
+                # entries came from a weaker engine or an older wording.
+                "engine": str(engine or ""),
+                "prompt_version": PROMPT_VERSION,
+                "created": now,
+            }
+            stored += 1
+    if stored:
+        _flush()
+    return stored
+
+
+def memory_size() -> int:
+    return len(_entries())
+
+
+# --------------------------------------------------------------------------- #
+# answers
+# --------------------------------------------------------------------------- #
 
 def _clean(text: Any) -> str:
     value = str(text or "")
@@ -101,10 +210,10 @@ def _clean(text: Any) -> str:
     return value.strip(" ,")
 
 
-def _strip_cjk(text: str) -> str:
-    """Last resort: keep whatever English came with the leftover Chinese."""
+def _strip_unreadable(text: str) -> str:
+    """Last resort: keep whatever English came with the leftover characters."""
     value = str(text or "").replace("，", ",").replace("、", ",")
-    value = CJK_RUN.sub(" ", value)
+    value = re.sub(r"[^\x00-\x7f]+", " ", value)
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r"\s*,\s*", ", ", value)
     value = re.sub(r"(?:\s*,\s*)+", ", ", value)
@@ -118,19 +227,6 @@ def _endpoint(url: str) -> str:
     if value.endswith("/v1"):
         return value + "/chat/completions"
     return value + "/v1/chat/completions"
-
-
-def _remember(source: str, value: str) -> None:
-    with _CACHE_LOCK:
-        if len(_CACHE) >= CACHE_LIMIT:
-            for key in list(_CACHE)[: CACHE_LIMIT // 4]:
-                _CACHE.pop(key, None)
-        _CACHE[source] = value
-
-
-def _recall(source: str) -> str:
-    with _CACHE_LOCK:
-        return _CACHE.get(source, "")
 
 
 async def _ask(session: aiohttp.ClientSession, url: str, model: str, prompt: str, text: str) -> str:
@@ -159,19 +255,20 @@ async def _ask(session: aiohttp.ClientSession, url: str, model: str, prompt: str
     return str((message or {}).get("content") or "")
 
 
-async def _one(session: aiohttp.ClientSession, config: dict[str, Any], text: str) -> str | None:
+async def _one(session: aiohttp.ClientSession, config: dict[str, Any], text: str) -> str:
+    """One text through the backend, with the retry and salvage ladder."""
     url = _endpoint(config["url"])
     model = str(config["model"] or "")
     answer = _clean(await _ask(session, url, model, SYSTEM_PROMPT, text))
-    if answer and not has_cjk(answer):
+    if answer and not needs_translation(answer):
         return answer
     retry = _clean(await _ask(session, url, model, RETRY_PROMPT, text))
-    if retry and not has_cjk(retry):
+    if retry and not needs_translation(retry):
         return retry
-    salvaged = _strip_cjk(retry or answer)
-    if salvaged and not has_cjk(salvaged):
+    salvaged = _strip_unreadable(retry or answer)
+    if salvaged and not needs_translation(salvaged):
         return salvaged
-    return None
+    return ""
 
 
 def _entry(source: str, text: str, translated: bool, *, cached: bool = False, reason: str = "") -> dict[str, Any]:
@@ -181,7 +278,32 @@ def _entry(source: str, text: str, translated: bool, *, cached: bool = False, re
     return item
 
 
-async def translate(texts: Iterable[Any], target: str = "en") -> dict[str, Any]:
+def _usable() -> dict[str, Any] | None:
+    config = settings_module.translate()
+    if not (config["enabled"] and config["url"]):
+        return None
+    return config
+
+
+async def _translate_missing(config: dict[str, Any], texts: list[str]) -> dict[str, str]:
+    """Translate the texts that are not in the memory; returns ``{source: text}``."""
+    answers: dict[str, str] = {}
+    timeout = aiohttp.ClientTimeout(total=float(config["timeout"] or 25.0))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for source in texts:
+                try:
+                    answer = await _one(session, config, source)
+                except Exception:
+                    answer = ""
+                if answer:
+                    answers[source] = answer
+    except Exception:
+        pass
+    return answers
+
+
+async def translate(texts: Iterable[Any], target: str = TARGET) -> dict[str, Any]:
     """Translate a batch of prompts; English and failures come back unchanged."""
     sources = [str(item if item is not None else "")[:MAX_TEXT_CHARS] for item in list(texts)[:MAX_TEXTS]]
     config = settings_module.translate()
@@ -189,35 +311,70 @@ async def translate(texts: Iterable[Any], target: str = "en") -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     todo: list[str] = []
     for source in sources:
-        if not has_cjk(source):
+        if not needs_translation(source):
             results.append(_entry(source, source, False, reason="not_needed"))
             continue
-        cached = _recall(source)
+        cached = recall(source)
         if cached:
             results.append(_entry(source, cached, True, cached=True))
             continue
-        results.append(_entry(source, source, False, reason="unavailable" if not usable else ""))
+        # Stays as a pass-through unless the batch below turns it into a
+        # translation, which is what makes an unreachable backend look like "the
+        # text came back unchanged" rather than an error.
+        results.append(_entry(source, source, False, reason="" if usable else "unavailable"))
         todo.append(source)
-    if not todo or not usable:
-        return {"engine": str(config["model"] or ""), "target": target, "available": usable, "results": results}
 
-    timeout = aiohttp.ClientTimeout(total=float(config["timeout"] or 25.0))
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for source in todo:
-                try:
-                    answer = await _one(session, config, source)
-                except Exception:
-                    answer = None
-                if not answer:
-                    continue
-                _remember(source, answer)
-                for index, item in enumerate(results):
-                    if item["source"] == source and not item["translated"]:
-                        results[index] = _entry(source, answer, True)
-    except Exception:
-        pass
-    return {"engine": str(config["model"] or ""), "target": target, "available": usable, "results": results}
+    if todo and usable:
+        answers = await _translate_missing(config, todo)
+        if answers:
+            remember((source, answers[source], str(config["model"] or "")) for source in answers)
+        for index, item in enumerate(results):
+            answer = answers.get(item["source"])
+            if answer and not item["translated"]:
+                results[index] = _entry(item["source"], answer, True)
+
+    return {"engine": str(config["model"] or ""), "target": target,
+            "available": usable, "results": results}
 
 
-__all__ = ["MAX_TEXTS", "MAX_TEXT_CHARS", "describe", "enabled", "has_cjk", "translate"]
+async def ensure_english(text: Any, target: str = TARGET) -> tuple[str, bool]:
+    """The submit-path fallback: ``(text to use, whether it was translated)``.
+
+    Never raises and never returns an empty string for a non-empty input: a
+    missing translation must not fail a job, and must never silently drop what
+    the user wrote.
+    """
+    source = str(text or "")[:MAX_TEXT_CHARS]
+    if not source or not needs_translation(source):
+        return source, False
+    config = _usable()
+    if config is None:
+        return source, False
+    cached = recall(source)
+    if cached:
+        return cached, True
+    answer = (await _translate_missing(config, [source])).get(source, "")
+    if not answer:
+        return source, False
+    remember([(source, answer, str(config["model"] or ""))])
+    return answer, True
+
+
+def describe() -> dict[str, Any]:
+    """What the discovery document reports; never leaks the internal address."""
+    config = settings_module.translate()
+    available = bool(config["enabled"] and config["url"])
+    return {
+        "available": available,
+        "mode": "auto-on-submit",
+        "target": TARGET,
+        "backend": {"style": "openai-chat-completions", "model": str(config["model"] or "")},
+        "memory": {"schema": MEMORY_SCHEMA, "entries": memory_size(),
+                   "limit": int(config["memory_limit"])},
+        "rule": "提示词只含 ASCII 时原样提交, 不发起翻译",
+    }
+
+
+__all__ = ["MAX_TEXTS", "MAX_TEXT_CHARS", "MEMORY_FILE", "MEMORY_SCHEMA", "PROMPT_VERSION",
+           "TARGET", "describe", "enabled", "ensure_english", "memory_path", "memory_size",
+           "needs_translation", "recall", "remember", "translate"]

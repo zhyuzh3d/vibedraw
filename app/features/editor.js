@@ -162,50 +162,16 @@
     node("local-prompt").classList.toggle("is-placeholder", !localPrompt);
   }
   function editLocalPrompt() {
-    var root = ui.open({ mode: "center", title: t("局部重绘描述", "Local change description"), html: '<label class="field"><span>' + t("这一块要改成什么", "What should this area become") + '</span><textarea id="local-prompt-input" rows="3" maxlength="400"></textarea></label><p class="field-help">' + t("只提交这一句,不带顶部的画面描述；中英文都行,写中文会先译成英文。", "Only this sentence is submitted, without the artwork description. Chinese or English both work; Chinese is translated first.") + '</p><div class="translate-row" id="local-prompt-translate" hidden><p class="field-help" id="local-prompt-preview"></p><button type="button" class="button button-secondary" data-translate-now>' + t("立即翻译", "Translate now") + '</button></div><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
-    var input = root.querySelector("#local-prompt-input"), preview = root.querySelector("#local-prompt-preview"), translateRow = root.querySelector("#local-prompt-translate");
-    var translateButton = root.querySelector("[data-translate-now]");
+    var root = ui.open({ mode: "center", title: t("局部重绘描述", "Local change description"), html: '<label class="field"><span>' + t("这一块要改成什么", "What should this area become") + '</span><textarea id="local-prompt-input" rows="3" maxlength="400"></textarea></label><p class="field-help">' + t("只提交这一句,不带顶部的画面描述；中英文都行,写中文由插件在提交那一刻自动译成英文。", "Only this sentence is submitted, without the artwork description. Chinese or English both work; the plugin translates a Chinese one as the job is submitted.") + '</p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
+    var input = root.querySelector("#local-prompt-input");
     input.value = String(app.state.localPrompt || "");
     input.placeholder = t("例如：把这里改成一只白色的猫", "e.g. turn this area into a white cat");
-    // The line carries the English of the last translation, and the button asks
-    // for one now. Nothing is translated while typing, and nothing twice.
-    function paintPreview() {
-      var text = input.value.trim(), wanted = app.services.translate.hasCjk(text);
-      translateRow.hidden = !wanted;
-      if (!wanted) { preview.textContent = ""; return; }
-      preview.textContent = app.services.translate.translated(text)
-        ? t("将会提交：", "Will submit: ") + app.services.translate.english(text)
-        : t("还没有英文译文,点「立即翻译」或直接保存", "No English yet. Tap Translate now, or just save.");
-    }
-    function shortEnglish(text) { var value = app.services.translate.english(text); return value.length > 48 ? value.slice(0, 48) + "…" : value; }
-    translateButton.onclick = ui.action(async function () {
-      var text = input.value.trim();
-      if (!text || !app.services.translate.hasCjk(text)) { paintPreview(); return; }
-      translateButton.disabled = true; translateButton.textContent = t("翻译中…", "Translating…");
-      await app.services.translate.translate([text]);
-      translateButton.disabled = false; translateButton.textContent = t("立即翻译", "Translate now");
-      paintPreview();
-      // The service skips a text it has already translated, so the answer is read
-      // from the cache rather than from this one call's result.
-      if (app.services.translate.translated(text)) ui.toast(t("已译成英文：", "Translated: ") + shortEnglish(text));
-      else ui.toast(t("没能译成英文,请检查翻译服务后重试", "Could not translate. Check the translator and try again."), "error");
-    });
-    input.addEventListener("input", paintPreview); paintPreview();
     root.querySelector("[data-cancel]").onclick = ui.close;
     root.querySelector("[data-save]").onclick = ui.action(async function () {
       app.state.localPrompt = input.value.trim();
       syncLocalPrompt(); app.services.store.scheduleCanvasSave(); ui.close();
       if (!app.state.localPrompt) { status(t("局部描述已清空", "Local description cleared")); return; }
-      var into = t("局部描述已保存，点「快速」或随机按钮重绘这块区域", "Local description saved. Use Fast or the dice to redraw this area");
-      if (!app.services.translate.hasCjk(app.state.localPrompt)) { status(into); return; }
-      // Saving is what triggers the translation; a field that already holds one is
-      // not asked for again. A failure is reported at the bottom.
-      if (!app.services.translate.translated(app.state.localPrompt)) {
-        status(t("正在把局部描述译成英文…", "Translating the local description…"));
-        await app.services.translate.translate([app.state.localPrompt]);
-      }
-      if (app.services.translate.translated(app.state.localPrompt)) status(t("局部描述已译成英文,将提交：", "Local description translated. Will submit: ") + shortEnglish(app.state.localPrompt));
-      else { status(into); ui.toast(t("局部描述没能译成英文，本次会按中文提交；请再点一次「保存」重试", "The local description could not be translated, so the Chinese text is submitted this time. Save again to retry."), "error"); }
+      status(t("局部描述已保存，点「快速」或随机按钮重绘这块区域", "Local description saved. Use Fast or the dice to redraw this area"));
     });
   }
   function bindOptions() {

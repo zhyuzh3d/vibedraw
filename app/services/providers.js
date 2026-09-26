@@ -5,15 +5,11 @@
   var network = app.platform.hermit;
   var t = app.i18n && app.i18n.text || function (zh) { return zh; };
   var PROTOCOLS = [
-    { id: "cvp", name: "ComfyUI Vibedraw Plugin（推荐）", description: "连接装有 VibeDraw 插件的 ComfyUI。插件自带快速生图 / 局部重绘 / 放大绘制三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。" },
+    { id: "cvp", name: "ComfyUI Vibedraw Plugin（推荐）", description: "连接装有 VibeDraw 插件的 ComfyUI。插件自带快速生图 / 局部重绘 / 放大绘制三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。中文提示词由插件自动译成英文。" },
     { id: "openai-images", name: "OpenAI Images 兼容", description: "兼容 /v1/images/generations 与 /v1/images/edits，适合云端与兼容网关。" },
     { id: "sd-webui", name: "SD WebUI / Forge", description: "兼容 /sdapi/v1/img2img，适合局域网 Stable Diffusion WebUI 或 Forge。" },
     { id: "stability", name: "Stability AI", description: "兼容 Stable Image v2beta 的 Control Sketch 与 Generate 接口。" }
   ];
-
-  //: Slot -> CVP task. The plugin owns the three built-in graphs, so the client
-  //: only has to name the task and hand over the canvas.
-  var CVP_TASKS = { quick: "quick", inpaint: "inpaint", upscale: "upscale" };
 
   function headers(config, contentType) {
     var output = u.parseHeaders(config.customHeaders || "");
@@ -151,23 +147,60 @@
   }
 
   // --------------------------------------------------------------------- //
-  // CVP — the ComfyUI VibeDraw plugin (schema vibedraw-comfy/v2)
+  // CVP — the ComfyUI VibeDraw plugin (spec cvp/1)
   //
-  // One endpoint, three tasks. The plugin ships its own graphs, so the client
-  // sends a task name plus the canvas and never an API workflow. The plugin
-  // also serves the finished image itself, which keeps a single password for
-  // both submitting and downloading.
+  // One contract, three capabilities. The plugin ships the graphs, so the
+  // client names a capability, hands over the canvas, and never uploads a
+  // workflow. The plugin also serves the finished image itself, which keeps a
+  // single password for submitting and downloading alike.
+  //
+  // Three calls, each with one job: /cvp/info says what the server can do,
+  // /cvp/jobs/{id}/progress is the light one to poll while waiting, and
+  // /cvp/jobs/{id} is read once, at the end, because that is where the results
+  // are. Nothing here translates a prompt: the plugin owns the translator and
+  // its memory, and decides by itself whether a model needs English.
   // --------------------------------------------------------------------- //
 
+  //: The plugin names capabilities semantically, not after a model. A slot is
+  //: the app's own word for the same thing, and the map keeps the two apart.
+  var CVP_CAPABILITY = { quick: "quick", inpaint: "inpaint", upscale: "upscale" };
+  //: The last /cvp/info document. It is what lets the client honour a
+  //: capability's `ignores` and offer the sizes that capability really accepts,
+  //: and it is refreshed every time the connection is tested.
+  var cvpInfo = null;
+
   function cvpBase(endpoint) {
-    var value = u.stripSlash(endpoint), marker = value.indexOf("/vibedraw/");
-    return marker >= 0 ? value.slice(0, marker) : value;
+    var value = u.stripSlash(endpoint), marker = value.search(/\/(?:cvp|vibedraw)(?:\/|$)/i);
+    return marker > 0 ? value.slice(0, marker) : value;
   }
-  function cvpTask(config) { return CVP_TASKS[config && (config.task || config.slot)] || "quick"; }
+  function cvpTask(config) { return CVP_CAPABILITY[config && (config.capability || config.task || config.slot)] || "quick"; }
+  function cvpRemember(document) { if (document && document.spec) cvpInfo = document; return cvpInfo; }
+  function cvpCapability(name) {
+    var wanted = String(name == null ? "" : name).toLowerCase(), list = (cvpInfo && cvpInfo.capabilities) || [];
+    if (!wanted) return null;
+    return list.filter(function (item) {
+      if (!item) return false;
+      if (String(item.id || "").toLowerCase() === wanted) return true;
+      return (item.aliases || []).some(function (alias) { return String(alias).toLowerCase() === wanted; });
+    })[0] || null;
+  }
+  function cvpSizes(name) {
+    var capability = cvpCapability(name), pairs = capability && capability.values && capability.values.size;
+    return (pairs || []).map(function (pair) { return Number(pair && pair[0]); }).filter(function (value) { return Number.isFinite(value) && value > 0; });
+  }
+  function cvpDefault(name, field) {
+    var capability = cvpCapability(name), defaults = capability && capability.defaults, value = defaults ? defaults[field] : null;
+    return value == null ? null : value;
+  }
+  function cvpIgnores(name, field) {
+    var capability = cvpCapability(name);
+    return ((capability && capability.ignores) || []).some(function (item) { return String(item) === field; });
+  }
   function cvpError(error) {
     var text = String(error && error.message || error || "");
     if (/unauthorized|401/.test(text)) return new Error(t("访问密码不正确，请在 ComfyUI 的 VibeDraw 配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI VibeDraw config node."));
-    if (/no_model|模型/.test(text)) return new Error(t("插件没有可用模型，请先在 ComfyUI 的 VibeDraw 配置节点里选择 checkpoint", "The plugin has no model. Pick a checkpoint in the ComfyUI VibeDraw config node first."));
+    if (/no_model|模型/.test(text)) return new Error(t("插件没有可用模型，请先在 ComfyUI 的 VibeDraw 配置节点里为这个能力选好模型", "The plugin has no model. Choose one for this capability in the ComfyUI VibeDraw config node first."));
+    if (/unsupported_capability|unsupported_task/.test(text)) return new Error(t("插件不认识这个能力，请升级插件", "The plugin does not know this capability. Please update it."));
     if (/busy|429/.test(text)) return new Error(t("插件队列已满，请稍后再试", "The plugin queue is full. Try again shortly."));
     return error;
   }
@@ -189,24 +222,30 @@
     return u.clamp(base * (value / 0.8), 0.05, 0.95);
   }
   async function cvpGenerate(config, input) {
-    var base = cvpBase(config.endpoint), api = base + "/vibedraw/v1", task = cvpTask(config);
+    var base = cvpBase(config.endpoint), api = base + "/cvp", capability = cvpTask(config);
     var requestHeaders = headers(config, "application/json");
     var body = {
-      task: task,
+      // The capability id, never a model name and never the old `task`: the
+      // plugin renaming a capability must not require a new client.
+      capability: capability,
       prompt: input.prompt,
-      negative_prompt: input.negativePrompt,
       seed: Number(input.seed) >= 0 ? Number(input.seed) : Math.floor(Math.random() * 9007199254740991),
       size: [Number(config.width) || 512, Number(config.height) || 512],
       steps: Number(config.steps) || 8,
       ref_strength: cvpStrength(config, input.strength)
     };
+    // A capability that declares a field ignored is not sent it: the server
+    // would drop it anyway and report it back, and sending it would let the
+    // user believe a control did something. Knowing which fields those are is
+    // what the last /cvp/info was for.
+    if (!cvpIgnores(capability, "negative_prompt")) body.negative_prompt = input.negativePrompt;
     if (input.imageDataUrl) body.image_base64 = input.imageDataUrl;
-    if (task === "inpaint") {
+    if (capability === "inpaint") {
       if (!input.maskDataUrl) throw new Error(t("局部重绘缺少蒙版，请先用局部工具标记要改的区域", "Local redraw needs a mask. Mark the area with the mask tool first."));
       body.mask_base64 = input.maskDataUrl;
       body.grow_mask_by = u.clamp(Number(config.growMaskBy) || 8, 0, 64);
     }
-    var label = task === "inpaint" ? t("局部重绘", "Local redraw") : task === "upscale" ? t("放大绘制", "Upscale") : t("快速生图", "Quick draw");
+    var label = capability === "inpaint" ? t("局部重绘", "Local redraw") : capability === "upscale" ? t("放大绘制", "Upscale") : t("快速生图", "Quick draw");
     app.events.emit("generation:progress", t("正在提交" + label + "任务…", "Submitting the " + label + " job…"));
     var submitted;
     try {
@@ -215,24 +254,40 @@
     } catch (error) { throw cvpError(error); }
     var accepted = u.parseJson(submitted.bodyText || "", null), jobId = accepted && accepted.job && accepted.job.id;
     if (!jobId) throw new Error(t("CVP 插件未返回任务 ID，请确认插件版本与地址", "The CVP plugin did not return a job id. Check the plugin version and address."));
-    var deadline = Date.now() + (Number(config.timeoutMs) || 120000), detail = null;
+    var deadline = Date.now() + (Number(config.timeoutMs) || 120000), state = "";
     while (Date.now() < deadline) {
       await u.sleep(700);
       var polled;
       try {
-        polled = await network.request({ url: api + "/jobs/" + encodeURIComponent(jobId), method: "GET", headers: headers(config), timeoutMs: 15000 });
+        polled = await network.request({ url: api + "/jobs/" + encodeURIComponent(jobId) + "/progress", method: "GET", headers: headers(config), timeoutMs: 15000 });
         ensureOk(polled, headers(config));
       } catch (error) { throw cvpError(error); }
-      var payload = u.parseJson(polled.bodyText || "", null);
-      detail = payload && payload.job;
-      if (!detail) continue;
-      if (detail.state === "failed") throw new Error(t("CVP 工作流执行失败：", "CVP workflow failed: ") + String(detail.error || "unknown"));
-      if (detail.state === "cancelled") throw new Error(t("CVP 任务已取消", "The CVP job was cancelled"));
-      if (detail.state === "completed") break;
-      if (detail.progress) app.events.emit("generation:progress", t(label + "进行中…", label + " in progress…"));
+      var payload = u.parseJson(polled.bodyText || "", null), frame = payload && payload.job;
+      if (!frame) continue;
+      state = String(frame.state || "");
+      if (state === "completed") break;
+      if (state === "failed") throw new Error(t("CVP 工作流执行失败：", "CVP workflow failed: ") + String(frame.error || "unknown"));
+      if (state === "cancelled") throw new Error(t("CVP 任务已取消", "The CVP job was cancelled"));
+      // The progress call answers with a state and a queue position and nothing
+      // else — a percentage is deliberately not part of the contract. The wait
+      // is therefore reported as an indeterminate one, and only the queue, which
+      // every implementation can actually count, gets a number.
+      var ahead = Number(frame.queue_position);
+      app.events.emit("generation:progress", Number.isFinite(ahead) && ahead > 0
+        ? t(label + "排队中，前面还有 " + ahead + " 个任务…", label + " queued behind " + ahead + " job(s)…")
+        : t(label + "进行中…", label + " in progress…"));
     }
-    if (!detail || detail.state !== "completed") throw new Error(t("CVP 生成超时，任务可能仍在服务端队列中", "CVP timed out; the job may still be queued on the server"));
-    var output = detail.outputs && detail.outputs[0];
+    if (state !== "completed") throw new Error(t("CVP 生成超时，任务可能仍在服务端队列中", "CVP timed out; the job may still be queued on the server"));
+    // The light call said it was done; the heavy one is where the results live,
+    // so it is read once, here, rather than on every poll.
+    var finished;
+    try {
+      finished = await network.request({ url: api + "/jobs/" + encodeURIComponent(jobId), method: "GET", headers: headers(config), timeoutMs: 30000 });
+      ensureOk(finished, headers(config));
+    } catch (error) { throw cvpError(error); }
+    var job = (u.parseJson(finished.bodyText || "", null) || {}).job || null;
+    if (!job || job.state !== "completed") throw new Error(t("CVP 任务结束时状态是 " + String(job && job.state || "未知"), "The CVP job ended in state " + String(job && job.state || "unknown")));
+    var output = job.outputs && job.outputs[0];
     if (!output || !output.url) throw new Error(t("CVP 任务完成，但没有图片输出", "The CVP job finished without an image"));
     var imageUrl = /^https?:/i.test(output.url) ? output.url : base + output.url;
     app.events.emit("generation:progress", t("正在读取生成图片…", "Loading the generated image…"));
@@ -242,7 +297,7 @@
       ensureOk(downloaded, headers(config));
     } catch (error) { throw cvpError(error); }
     var result = await responseImage(downloaded, headers(config));
-    result.metadata = detail;
+    result.metadata = job;
     return result;
   }
 
@@ -267,7 +322,7 @@
     var root, url;
     if (config.protocol === "openai-images") { root = openAiRoot(config.endpoint); url = root + "/models"; }
     else if (config.protocol === "sd-webui") url = u.stripSlash(config.endpoint) + "/sdapi/v1/sd-models";
-    else if (config.protocol === "cvp") url = cvpBase(config.endpoint) + "/vibedraw/v1/capabilities";
+    else if (config.protocol === "cvp") url = cvpBase(config.endpoint) + "/cvp/info";
     else {
       var parsed = new URL(stabilityEndpoint(config));
       url = parsed.origin + "/v1/user/account";
@@ -275,11 +330,27 @@
     var requestHeaders = headers(config), response = await network.request({ url: url, method: "GET", headers: requestHeaders, timeoutMs: Math.min(Number(config.timeoutMs) || 30000, 30000) });
     ensureOk(response, requestHeaders);
     if (config.protocol === "cvp") {
-      var capabilities = u.parseJson(response.bodyText || "", null), tasks = capabilities && capabilities.tasks || [], wanted = cvpTask(config);
-      var found = tasks.filter(function (item) { return item && item.id === wanted; })[0];
-      if (!found) throw new Error(t("CVP 插件不支持“" + wanted + "”任务，请升级插件", "The CVP plugin does not offer the " + wanted + " task. Please update it."));
-      if (!found.model) throw new Error(t("插件的" + wanted + "任务还没有选择模型，请在 ComfyUI 的 VibeDraw 配置节点里设置", "The plugin has no model for " + wanted + ". Set it in the ComfyUI VibeDraw config node."));
-      return { ok: true, status: response.status, task: wanted, model: found.model, sizes: found.sizes || [], steps: found.steps || {}, authRequired: Boolean(capabilities.auth && capabilities.auth.required) };
+      // One public call answers every question the model card asks: does the
+      // address resolve, was the password right, does the capability exist, are
+      // its models installed, and does it want English. It is public on
+      // purpose, so the first two are answered together instead of being told
+      // apart by a second failing request.
+      var document = cvpRemember(u.parseJson(response.bodyText || "", null));
+      if (!document || !document.spec) throw new Error(t("这个地址不是 CVP 服务，请确认插件已安装且 ComfyUI 已重启", "That address is not a CVP server. Check that the plugin is installed and ComfyUI restarted."));
+      var auth = document.auth || {};
+      if (auth.required && !auth.authorized) throw new Error(t("访问密码不正确，请在 ComfyUI 的 VibeDraw 配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI VibeDraw config node."));
+      var wanted = cvpTask(config), capability = cvpCapability(wanted);
+      if (!capability) throw new Error(t("CVP 插件不支持“" + wanted + "”能力，请升级插件", "The CVP plugin does not offer the " + wanted + " capability. Please update it."));
+      if (!capability.ready) throw new Error(t("插件的" + wanted + "能力还没有选好模型，请在 ComfyUI 的 VibeDraw 配置节点里设置", "The plugin has no model for " + wanted + ". Set it in the ComfyUI VibeDraw config node."));
+      return {
+        ok: true, status: response.status, spec: document.spec, plugin: document.plugin || {},
+        capability: wanted, label: capability.label || {}, ready: true,
+        promptLanguage: (capability.prompt || {}).language || "",
+        sizes: cvpSizes(wanted), steps: (capability.values || {}).steps || [],
+        defaults: capability.defaults || {}, models: capability.models || [],
+        authRequired: Boolean(auth.required), authorized: Boolean(auth.authorized),
+        translation: document.translation || null
+      };
     }
     return { ok: true, status: response.status };
   }
@@ -288,17 +359,22 @@
     var value = u.copy(app.defaults[name]), rendered = name === "upscale";
     value.slot = name;
     value.task = name;
+    value.capability = name;
     value.protocol = protocol;
     value.apiKey = "";
     value.customHeaders = "";
     value.workflow = "";
     if (protocol === "cvp") {
+      // What the plugin accepts is the plugin's to say, so a capability the
+      // client has already read decides the starting canvas, steps and weight.
+      // With nothing read yet these fall back to the same numbers as before.
+      var sizes = cvpSizes(name), steps = cvpDefault(name, "steps"), strength = cvpDefault(name, "ref_strength");
       value.endpoint = "http://192.168.1.2:8188";
       value.model = "";
       value.inputMode = "sketch";
-      value.width = value.height = rendered ? 1024 : 512;
-      value.steps = name === "inpaint" ? 6 : 8;
-      value.refStrength = name === "inpaint" ? 0.3 : rendered ? 0.75 : 0.55;
+      value.width = value.height = sizes.length ? sizes[0] : (rendered ? 1024 : 512);
+      value.steps = steps == null ? (name === "inpaint" ? 6 : 8) : Number(steps);
+      value.refStrength = strength == null ? (name === "inpaint" ? 0.3 : rendered ? 0.75 : 0.55) : Number(strength);
       value.growMaskBy = 8;
       value.timeoutMs = rendered ? 240000 : 60000;
     } else if (protocol === "openai-images") {
@@ -330,11 +406,19 @@
     test: test,
     validate: validate,
     preset: preset,
+    //: What the last /cvp/info said about one capability. The model card reads
+    //: this to offer the sizes the plugin really accepts instead of a guess.
+    capability: cvpCapability,
+    capabilitySizes: cvpSizes,
     internals: {
       openAiRoot: openAiRoot,
       cvpBase: cvpBase,
       cvpTask: cvpTask,
       cvpStrength: cvpStrength,
+      cvpCapability: cvpCapability,
+      cvpSizes: cvpSizes,
+      cvpRemember: cvpRemember,
+      cvpIgnores: cvpIgnores,
       jsonImage: jsonImage,
       aspect: aspect
     }

@@ -6,8 +6,12 @@ The archive unpacks straight into ComfyUI's `custom_nodes/` directory, so the
 the happ archive this is byte-for-byte reproducible: fixed timestamps, sorted
 entries, no compression surprises.
 
+The version number is never written here: it is read from
+``vibedraw_comfy/version.py`` so the zip name and the number the plugin reports
+over HTTP can never drift apart.
+
 Usage:
-  python3 tools/package-plugin.py           # build release/vibedraw-comfyui-plugin-v2.0.0.zip
+  python3 tools/package-plugin.py           # build release/vibedraw-comfyui-plugin-v<version>.zip
   python3 tools/package-plugin.py --check   # rebuild in memory and compare digests
 """
 
@@ -20,10 +24,27 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "comfyui-plugin"
-VERSION = "2.0.1"
-ARCHIVE = ROOT / "release" / f"vibedraw-comfyui-plugin-v{VERSION}.zip"
+VERSION_FILE = SOURCE / "vibedraw_comfy" / "version.py"
 FIXED_TIMESTAMP = (2026, 9, 17, 0, 0, 0)
 ENTRIES = ("vibedraw_comfy", "README.md")
+
+
+def plugin_version() -> str:
+    """Read ``__version__`` out of version.py without importing the package.
+
+    Importing ``vibedraw_comfy`` would pull in ``folder_paths`` and ``aiohttp``,
+    neither of which exists on the machine that builds the zip.
+    """
+    namespace: dict[str, object] = {}
+    exec(compile(VERSION_FILE.read_text(encoding="utf-8"), str(VERSION_FILE), "exec"), namespace)
+    value = namespace.get("__version__")
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"no usable __version__ in {VERSION_FILE.relative_to(ROOT)}")
+    return value.strip()
+
+
+VERSION = plugin_version()
+ARCHIVE = ROOT / "release" / f"vibedraw-comfyui-plugin-v{VERSION}.zip"
 
 
 def plugin_files() -> list[pathlib.Path]:

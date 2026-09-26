@@ -129,7 +129,9 @@
         model.workflow = "";
         model.guidanceScale = 1;
       }
-      model.slot = name; model.task = name;
+      // `slot`, `task` and `capability` all name the same thing here: the app's
+      // word for the capability, which is what a CVP job is submitted under.
+      model.slot = name; model.task = name; model.capability = name;
       if (!Number.isFinite(Number(model.refStrength)) || Number(model.refStrength) <= 0) model.refStrength = app.defaults[name].refStrength;
       if (!Number.isFinite(Number(model.growMaskBy))) model.growMaskBy = 8;
     });

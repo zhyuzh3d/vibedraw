@@ -66,22 +66,19 @@
     // patched region, so only the local description travels with the mask.
     // A render leads with the fidelity instruction, so the artwork description can
     // never read as "paint this picture again", and it no longer needs one at all.
-    // What leaves is the English of a saved prompt, because every text encoder here
-    // reads Chinese as noise. Nothing is translated in this path — the cache is a
-    // lookup, and saving the prompt is what fills it.
-    var english = app.services.translate.english;
-    var prompt = masking ? app.utils.composePrompt("", english(app.state.localPrompt))
-      : slot === "upscale" ? app.utils.composePrompt(RENDER_PROMPT, english(app.state.prompt))
-      : app.utils.composePrompt(english(app.state.prompt), "");
-    var negativePrompt = slot === "upscale" ? app.utils.composePrompt(RENDER_NEGATIVE, english(app.state.negativePrompt)) : english(app.state.negativePrompt);
-    // Whatever the reason, a prompt that is still Chinese will be read as noise by
-    // every text encoder here, so each drawing says so instead of quietly producing
-    // something unrelated. The toast repeats with the drawing, because the mistake
-    // repeats with it; the wording points at the settings that can fix it.
-    var untranslated = (masking ? [app.state.localPrompt] : [app.state.prompt, app.state.negativePrompt]).filter(function (value) { return app.services.translate.hasCjk(english(value)); });
-    if (untranslated.length) app.components.ui.toast(t("提示词只能使用英文,请检查翻译大模型设置", "Prompts can only be in English. Check your translation model settings."), "error");
+    //
+    // What leaves is the prompt exactly as it was written. Deciding whether a
+    // model can read it is no longer this side's business: the CVP plugin owns
+    // the translator and its memory, translates on submit when a text encoder
+    // needs English, and reports back through `translated` / `prompt` /
+    // `prompt_source` what it did. Translating here as well would be a second
+    // mechanism for the same fact, and two of those disagree eventually.
+    var prompt = masking ? app.utils.composePrompt("", app.state.localPrompt)
+      : slot === "upscale" ? app.utils.composePrompt(RENDER_PROMPT, app.state.prompt)
+      : app.utils.composePrompt(app.state.prompt, "");
+    var negativePrompt = slot === "upscale" ? app.utils.composePrompt(RENDER_NEGATIVE, app.state.negativePrompt) : app.state.negativePrompt;
     var config = app.utils.copy(app.config[slot]);
-    config.slot = slot; config.task = slot;
+    config.slot = slot; config.task = slot; config.capability = slot;
     if (slot === "upscale") config.inputMode = "sketch";
     if (masking && !String(app.state.localPrompt || "").trim()) {
       if (!automatic) app.events.emit("error", new Error(t("先点「描述」写清这一块要改成什么，再生成", "Describe what this area should become first")));

@@ -90,32 +90,29 @@
     else about();
   }
   function aspectField(model, name) {
-    // The aspect and step count come from the plugin's task specification, so
-    // they are shown but never edited here. Only the upscale task lets the user
-    // pick between its two supported output sizes.
+    // The aspect and step count come from the plugin's capability specification,
+    // so they are shown but never edited here. Only the upscale capability lets
+    // the user pick between its output sizes, and which those are is the
+    // plugin's answer, not this file's: the last /cvp/info is asked first and
+    // the familiar pair is only the fallback for a plugin never yet contacted.
+    var known = name === "upscale" ? app.services.providers.capabilitySizes(name) : [];
+    var choices = known.length ? known : (name === "upscale" ? [1024, 2048] : []);
     var sizes = name === "upscale"
-      ? '<span class="aspect-sizes">' + [1024, 2048].map(function (value) {
+      ? '<span class="aspect-sizes">' + choices.map(function (value) {
         return '<button type="button" data-aspect-size="' + value + '" class="' + (Number(model.width) === value ? "is-active" : "") + '">' + value + " × " + value + '</button>';
       }).join("") + '</span>'
       : '<strong>' + model.width + " × " + model.height + '</strong>';
     return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>1:1</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
   }
-  var TRANSLATE_TAB = ["translate", "翻译", "Translation"];
-  // The translator belongs to the plugin and exists for Chinese prompts, so its tab
-  // only appears while the interface is Chinese: an English prompt needs no
-  // translation, and the tab would then be an empty promise.
-  function wantsTranslateTab() { return app.i18n.language() === "zh"; }
   function renderModels() {
-    if (slot === "translate" && !wantsTranslateTab()) slot = "quick";
-    var translating = slot === "translate";
-    var model = draft[slot] || draft.quick, protocol = translating ? "cvp" : model.protocol, cvp = protocol === "cvp";
-    // The three CVP tasks share one address, password and header set, so the form
-    // reads and writes that single object instead of this task's own copy. Switching
-    // tasks therefore shows the same connection, and the store re-derives each task
-    // from it when the settings are saved.
+    var model = draft[slot] || draft.quick, protocol = model.protocol, cvp = protocol === "cvp";
+    // The three CVP capabilities share one address, password and header set, so the
+    // form reads and writes that single object instead of this task's own copy.
+    // Switching capabilities therefore shows the same connection, and the store
+    // re-derives each one from it when the settings are saved.
     var shared = draft.connection || (draft.connection = { endpoint: "", apiKey: "", customHeaders: "" });
     var choices = app.services.providers.protocols.map(function (p) { return [p.id, p.name]; });
-    var tabs = (wantsTranslateTab() ? SLOT_TABS.concat([TRANSLATE_TAB]) : SLOT_TABS).map(function (entry) {
+    var tabs = SLOT_TABS.map(function (entry) {
       return '<button data-slot-tab="' + entry[0] + '" class="' + (slot === entry[0] ? "is-active" : "") + '">' + t(entry[1], entry[2]) + '</button>';
     }).join("");
     var secretLabel = cvp ? t("访问密码", "Access password") : "API Key";
@@ -124,24 +121,14 @@
       : t("免鉴权的本地服务可留空", "Optional for local services");
     var secretField = '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(cvp ? shared.apiKey : model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>';
     var sharedHelp = '<p class="field-help">' + t("三个任务的 CVP 地址与密码是同一套：在这里改，三个任务一起改。", "The three tasks share one CVP address and password: change it here and all three change together.") + '</p>';
-    // Translating is not a fourth task: it is the plugin's translator, reached through
-    // the same address and password as the three CVP tasks, so the tab locks the API
-    // format to the plugin and borrows that one connection instead of owning a copy.
-    var card = translating
-      ? '<div data-model-card="translate"><p class="model-intro">' + t("中文提示词要先译成英文才能出图,译英由 ComfyUI Vibedraw Plugin 内置的翻译大模型完成,所以这里没有别的选择。", "A Chinese prompt has to be translated before it can be drawn, and the ComfyUI Vibedraw Plugin's own translation model does that, so this format is the only option here.") + '</p>' +
-        '<div class="field locked-field"><span>' + t("接口模式", "API format") + '</span><strong>ComfyUI Vibedraw Plugin</strong></div>' +
-        input("endpoint", t("服务器地址", "Server address"), shared.endpoint, "url", "http://192.168.1.2:8188") +
-        secretField + sharedHelp +
-        '<button class="button button-secondary" data-test-translate><i class="fa-solid fa-language"></i>' + t("测试翻译", "Test translation") + '</button><p class="connection-status" data-test-translate-status></p>' +
-        '<p class="field-help">' + t("测试会送一句中文过去,回来的是英文才算可用。只要提示词里还有中文,每次生图都会在下方提示你回来检查这里。", "The test sends one Chinese sentence: it is only working if English comes back. While a prompt still holds Chinese, every drawing reminds you to check this tab.") + '</p></div>'
-      : '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
+    var card = '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
         select("protocol", t("接口模式", "API format"), protocol, choices) +
         aspectField(model, slot) +
         input("endpoint", t("服务器地址", "Server address"), cvp ? shared.endpoint : model.endpoint, "url", cvp ? "http://192.168.1.2:8188" : "https://…") +
         secretField +
         (cvp ? sharedHelp : '') +
         (!cvp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
-        (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的三套工作流决定；点下方按钮可以直接读取插件当前的模型与能力。", "Aspect, steps and reference weight come from the plugin's three built-in workflows. The button below reads the plugin's current model and capabilities.") + '</p>' : '') +
+        (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的工作流决定；点下方按钮可以直接读取插件当前的模型与能力。中文提示词由插件负责译成英文。", "Aspect, steps and reference weight come from the plugin's built-in workflows. The button below reads the plugin's current models and capabilities. The plugin translates a Chinese prompt itself.") + '</p>' : '') +
         '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + (cvp ? input("refStrength", t("参考图权重基准", "Reference weight"), model.refStrength, "number") : '') + '</div>' +
         (cvp ? '<div class="field-row">' + input("growMaskBy", t("蒙版外扩（像素）", "Mask grow (px)"), model.growMaskBy, "number") + '</div>' : '') +
         (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
@@ -163,14 +150,14 @@
     root.querySelectorAll("[name]").forEach(function (field) {
       var numeric = ["width", "height", "steps", "timeoutMs", "refStrength", "growMaskBy"].indexOf(field.name) >= 0;
       // These three are the shared CVP connection, so they are written to the one
-      // object as well as to this task's copy (the copy keeps the test button and the
-      // request path reading real values before the settings are saved). The
-      // translation tab has no task of its own, so it writes the shared object only.
+      // object as well as to this capability's copy (the copy keeps the test
+      // button and the request path reading real values before the settings are
+      // saved).
       var sharedField = cvp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0;
       function update() {
         var value = field.name === "apiKey" || field.name === "customHeaders" ? field.value : numeric ? Number(field.value) : field.value;
         if (sharedField) shared[field.name] = value;
-        if (!translating) draft[slot][field.name] = value;
+        draft[slot][field.name] = value;
       }
       if (field.name === "protocol") field.onchange = async function () {
         var previous = model.protocol, protocol = field.value;
@@ -203,22 +190,22 @@
       status.textContent = t("连接中，不生成图片…", "Connecting without generating an image…");
       try {
         var result = await app.services.providers.test(draft[slot]);
-        if (result && result.task) status.textContent = t("连接成功；插件当前使用 " + result.model + "。", "Connected. The plugin is using " + result.model + ".");
-        else status.textContent = t("连接成功；出图能力取决于所选模型。", "Connected. Image support depends on the selected model.");
+        // One call to the plugin's public information endpoint answers all of it:
+        // the address resolves, the password was right, the capability exists,
+        // its models are installed. The card then says which model it will
+        // actually run and whether the user should type Chinese or English,
+        // both read from what the plugin reported rather than assumed here.
+        if (result && result.capability) {
+          var label = (result.label && (app.i18n.language() === "zh" ? result.label.zh : result.label.en)) || result.capability;
+          var files = (result.models || []).map(function (item) { return String(item.name || "").trim(); }).filter(function (name) { return name; }).join(" + ");
+          var language = result.promptLanguage === "en"
+            ? t("中文提示词会在提交时由插件译成英文。", "A Chinese prompt is translated by the plugin when the job is submitted.")
+            : t("可以直接写中文，提示词会原样交给模型。", "Chinese can be written as-is; the prompt reaches the model unchanged.");
+          status.textContent = t("连接成功：", "Connected: ") + label + (files ? " · " + files : "") + "。" + language;
+        } else status.textContent = t("连接成功；出图能力取决于所选模型。", "Connected. Image support depends on the selected model.");
       } catch (error) {
         status.textContent = t("连接失败，请检查地址与密码。", "Connection failed. Check your URL and password.");
         throw error;
-      }
-    });
-    var translateTest = root.querySelector("[data-test-translate]");
-    if (translateTest) translateTest.onclick = ui.action(async function () {
-      var status = root.querySelector("[data-test-translate-status]");
-      status.textContent = t("正在测试翻译,不生成图片…", "Testing the translator without generating an image…");
-      try {
-        var probe = await app.services.translate.probe(shared);
-        status.textContent = t("翻译可用（" + probe.engine + "）：" + probe.example + " → " + probe.text, "Translation works (" + probe.engine + "): " + probe.example + " → " + probe.text);
-      } catch (error) {
-        status.textContent = t("翻译不可用:请确认地址,密码正确,且插件端的翻译大模型已启动。", "Translation is unavailable. Check the address and password, and that the plugin's translation model is running.");
       }
     });
     var pluginButton = root.querySelector("[data-plugin-download]");
@@ -240,47 +227,13 @@
     var state = app.state;
     var root = ui.open({ sheetClass: "work-settings-sheet", contentClass: "work-settings-content", title: t("作品设置", "Artwork settings"), footerHtml: footer(t("应用", "Apply")), html:
       textarea("prompt", t("简述你期望的画面内容（中英文都行）", "Describe the image you expect (Chinese or English)"), state.prompt, "例如:一只蓝色的水晶鸟飞过雪山,清晨的光", 3) +
-      '<div class="translate-row" id="prompt-translate" hidden><p class="field-help" id="prompt-english"></p><button type="button" class="button button-secondary" data-translate-now="prompt">' + t("立即翻译", "Translate now") + '</button></div>' +
       textarea("negativePrompt", t("不希望出现内容（中英文都行）", "What to avoid (Chinese or English)"), state.negativePrompt, "例如:模糊,变形,水印", 2) +
-      '<div class="translate-row" id="negativePrompt-translate" hidden><p class="field-help" id="negativePrompt-english"></p><button type="button" class="button button-secondary" data-translate-now="negativePrompt">' + t("立即翻译", "Translate now") + '</button></div>' +
       range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, 100, "%", "strength-field") +
       '<p class="field-help compact-help">' + t("设置100或更高可以让AI画图和手绘稿更一致；设置80或更低会让AI更有创造力；请随时根据需要来这里调整。", "Set 100 or higher to keep the AI image closer to your sketch; set 80 or lower to give the AI more creative freedom. Return here and adjust it whenever needed.") + '</p>' +
       '<div class="field-row">' + input("seed", t("随机种子", "Seed"), state.seed, "number", t("关闭锁定时由模型自动随机", "The model randomizes while unlocked")) + input("autoDelayMs", t("笔刷等待（毫秒）", "Brush wait (ms)"), state.autoDelayMs, "number") + '</div>' +
       '<label class="switch-row"><span><strong>' + t("锁定随机种子", "Lock random seed") + '</strong><small>' + t("开启后重复使用当前种子，便于稳定画风与构图", "Reuse the current seed for more consistent style and composition") + '</small></span><input class="toggle-switch" name="seedLocked" type="checkbox" role="switch"' + (state.seedLocked ? " checked" : "") + '></label>' +
       '<label class="switch-row"><span><strong>' + t("叠加生成", "Overlay generation") + '</strong><small>' + t("开启：提交画布当前真实显示的背景、成图和透明元素层；关闭：忽略成图，提交背景与完全不透明的元素层", "On: submit exactly what the canvas shows: background, result, and the translucent element layer. Off: omit the result and submit the background with a fully opaque element layer") + '</small></span><input class="toggle-switch" name="overlayGenerate" type="checkbox" role="switch"' + (state.overlayGenerate ? " checked" : "") + '></label>' });
     ranges(root);
-    // A Chinese prompt leaves for the model as English. Both fields therefore
-    // carry the English of the last translation, and a button to ask for one now:
-    // nothing is translated while typing, and nothing is asked for twice.
-    function promptField(name) { return root.querySelector('[name="' + name + '"]'); }
-    function paintEnglish() {
-      ["prompt", "negativePrompt"].forEach(function (name) {
-        var field = promptField(name), row = root.querySelector("#" + name + "-translate"), line = root.querySelector("#" + name + "-english");
-        var text = field.value.trim(), wanted = app.services.translate.hasCjk(text);
-        row.hidden = !wanted;
-        if (!wanted) { line.textContent = ""; return; }
-        line.textContent = app.services.translate.translated(text)
-          ? t("将提交英文：", "Submits: ") + app.services.translate.english(text)
-          : t("还没有英文译文,点「立即翻译」或直接应用", "No English yet. Tap Translate now, or just apply.");
-      });
-    }
-    function shortEnglish(text) { var value = app.services.translate.english(text); return value.length > 48 ? value.slice(0, 48) + "…" : value; }
-    root.querySelectorAll("[data-translate-now]").forEach(function (button) {
-      button.onclick = ui.action(async function () {
-        var field = promptField(button.getAttribute("data-translate-now")), text = field.value.trim();
-        if (!text || !app.services.translate.hasCjk(text)) { paintEnglish(); return; }
-        button.disabled = true; button.textContent = t("翻译中…", "Translating…");
-        await app.services.translate.translate([text]);
-        button.disabled = false; button.textContent = t("立即翻译", "Translate now");
-        paintEnglish();
-        // The service skips a text it has already translated, so the answer is read
-        // from the cache rather than from this one call's result.
-        if (app.services.translate.translated(text)) ui.toast(t("已译成英文：", "Translated: ") + shortEnglish(text));
-        else ui.toast(t("没能译成英文,请检查翻译服务后重试", "Could not translate. Check the translator and try again."), "error");
-      });
-    });
-    ["prompt", "negativePrompt"].forEach(function (name) { promptField(name).addEventListener("input", paintEnglish); });
-    paintEnglish();
     var seedField = root.querySelector('[name="seed"]'), seedLock = root.querySelector('[name="seedLocked"]');
     function syncSeedLock() {
       seedField.disabled = !seedLock.checked;
@@ -298,16 +251,10 @@
       if (state.overlayGenerate !== nextOverlayGenerate) { state.resultOpacity = 0.66; state.layerOpacity = 0.66; }
       state.overlayGenerate = nextOverlayGenerate;
       app.services.store.scheduleCanvasSave(); app.services.imageEngine.schedule(); app.events.emit("result:filter"); app.events.emit("work:settings"); ui.close();
-      // Saving is what triggers the translation — never a keystroke, never a
-      // generation. A field that already holds a translation is not asked for
-      // again, so applying right after "Translate now" costs nothing.
-      var wanted = [state.prompt, state.negativePrompt].filter(function (value) { return app.services.translate.hasCjk(value); });
-      if (!wanted.length) { ui.toast(t("作品设置已应用", "Artwork settings applied")); return; }
-      var pending = wanted.filter(function (value) { return !app.services.translate.translated(value); });
-      if (pending.length) await app.services.translate.translate(pending);
-      var missing = wanted.filter(function (value) { return !app.services.translate.translated(value); });
-      if (missing.length) ui.toast(t("提示词没能译成英文,已按原文保存；请再点一次「应用」重试", "The prompt could not be translated and was saved as written. Tap Apply again to retry."), "error");
-      else ui.toast(t("已译成英文：", "Translated: ") + shortEnglish(wanted[0]));
+      // Nothing is translated here, and nothing has to be: the prompt is stored
+      // exactly as it was written. The plugin translates on submit when a model
+      // needs English, and says so in the job it answers with.
+      ui.toast(t("作品设置已应用", "Artwork settings applied"));
     });
   }
   function parseColor(value) {
@@ -428,13 +375,13 @@
     var fa = glyph, line = helpLine;
     ui.open({ title: t("使用说明", "How to draw"), html: '<div class="help-copy">' +
       helpSection(t("快速上手", "Quick start"), [
-        line(fa("fa-solid", "gear"), t("① 写提示词（中英文都行）", "1 · Describe it"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,中英文都行:中文会自动译成英文再出图,只写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. Chinese or English both work: Chinese is translated into English for the model, and an English prompt is submitted exactly as written. The more specific, the better.")),
+        line(fa("fa-solid", "gear"), t("① 写提示词（中英文都行）", "1 · Describe it"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,中英文都行。接 CVP 插件时,只认英文的模型由插件在提交那一刻自动把中文译成英文;写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. Chinese or English both work: with the CVP plugin, a model that only reads English gets a translation the plugin makes at submit time, and an English prompt is submitted exactly as written. The more specific, the better.")),
         line(fa("fa-solid", "pencil"), t("② 自由绘制", "2 · Draw freely"), t("铅笔勾轮廓，涂色铺色，也可以用「图片」导入参考。", "Sketch with Pencil, color with Brush, or import a reference with Image.")),
         line(fa("fa-solid", "wand-magic-sparkles") + fa("fa-solid", "dice"), t("③ 快速生成 / 随机创意", "3 · Fast or roll a seed"), t("点「快速」出实时预览；点骰子换一个随机数再生一次，换个构图。", "Tap Fast for a live preview, or the dice to roll a seed and generate again for a different take.")),
         line(fa("fa-regular", "gem"), t("④ 渲染大图", "4 · Render"), t("点「渲染」得到 1024 高清图；画布右下角钻石可全屏查看、单独下载。", "Tap Render for a 1024 image; the diamond on the canvas opens it fullscreen with its own download."))
       ]) +
       helpSection(t("作品设置", "Artwork settings"), [
-        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,中英文都行:写中文时下面自动显示上一次的英文译文,点「立即翻译」可马上译一遍,没改就不用重复译；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid, in Chinese or English — with Chinese it shows the last English translation and offers Translate now, and an unchanged prompt is never translated twice. Local redraw keeps its own separate description.")),
+        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,中英文都行,原样提交。写中文时由后台负责译成英文(CVP 插件自带翻译和缓存),应用不参与翻译,也不会改动你写的字；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid, in Chinese or English, submitted as written. A Chinese prompt is translated by the backend — the CVP plugin ships its own translator and cache — so the app takes no part in it and never rewrites your words. Local redraw keeps its own separate description.")),
         line(fa("fa-regular", "image"), t("图像权重（重点）", "Image weight (key)"), t("提示条上的滑竿：80% 为中性；调高更贴手绘稿，调低模型更自由。点左边的图片图标一键回到 80%。作品设置里的「绘制稿保留强度」就是这个值。", "The slider on the prompt bar: 80% is neutral. Higher sticks closer to your sketch, lower frees the model. The image icon on its left snaps back to 80%. Artwork settings exposes the same value as Sketch preservation."))
       ]) +
       helpSection(t("画布工具栏", "Canvas toolbar"), [

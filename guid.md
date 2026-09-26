@@ -15,7 +15,7 @@
 
 ```
 index.html            入口；只放骨架与样式引用
-hermit.json           包清单（schema 2，happId com.zhyuzh.vibedraw）
+hermit.json           包清单（schema 2，happId life.airen.vibedraw）
 guid.md               本文件
 app/app.js            启动与装配
 app/core/             纯逻辑，不碰 DOM 与宿主：namespace / runtime / i18n / utils / drawing

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "hermit.json"), "utf8"));
 assert.equal(manifest.schema, 2);
-assert.equal(manifest.happId, "com.zhyuzh.vibedraw");
+assert.equal(manifest.happId, "life.airen.vibedraw");
 assert.ok(Number.isInteger(manifest.version.code) && manifest.version.code > 0);
 assert.equal(manifest.display.orientation, "portrait", "VibeDraw must lock to portrait orientation");
 
@@ -20,7 +20,6 @@ const settingsJs = fs.readFileSync(path.join(root, "app/components/settings.js")
 const storeJs = fs.readFileSync(path.join(root, "app/services/store.js"), "utf8");
 const uiJs = fs.readFileSync(path.join(root, "app/components/ui.js"), "utf8");
 const imageEngineJs = fs.readFileSync(path.join(root, "app/services/image-engine.js"), "utf8");
-const translateJs = fs.readFileSync(path.join(root, "app/services/translate.js"), "utf8");
 const appJs = fs.readFileSync(path.join(root, "app/app.js"), "utf8");
 const assetsJs = fs.readFileSync(path.join(root, "app/services/assets.js"), "utf8");
 const providersJs = fs.readFileSync(path.join(root, "app/services/providers.js"), "utf8");
@@ -61,7 +60,16 @@ assert.ok(editorJs.includes("setPromptStrength(80)") && editorJs.includes("app.s
 assert.ok(editorJs.includes('node("prompt-strength-value").textContent = value + "%"') && editorCss.includes('.prompt-strength .icon-button{flex:0 0 24px') && editorCss.includes('margin:0 0 0 1px') && editorCss.includes('margin-left:3px'), "main image weight must use a borderless compact icon, tight gaps, and visible percentage");
 assert.ok(renderPreviewJs.includes('document.getElementById("render-preview-download").onclick') && renderPreviewJs.includes('surface.toDataURL("image/png")') && renderPreviewJs.includes('result = result || current') && renderPreviewJs.includes('surfaceTask.request()') && renderPreviewJs.includes('saveAdjustmentsDefault'), "render preview download and adjustment actions must use the adjusted surface");
 assert.ok(imageEngineJs.includes('if (slot === "upscale") config.inputMode = "sketch"') && imageEngineJs.includes('canvasInput.composeVisibleInput(referenceOptions)') && imageEngineJs.includes('dimensions.width !== wantWidth'), "Render must submit the visible canvas and require the configured square result");
-assert.ok(providersJs.includes('id: "cvp"') && providersJs.includes("CVP_TASKS") && providersJs.includes('base + "/vibedraw/v1"') && providersJs.includes('api + "/jobs"') && providersJs.includes("image_base64") && providersJs.includes("mask_base64") && providersJs.includes("grow_mask_by") && providersJs.includes("ref_strength"), "the CVP format must submit the plugin's three tasks with a reference weight and a mask");
+assert.ok(providersJs.includes('id: "cvp"') && providersJs.includes("CVP_CAPABILITY") && providersJs.includes('base + "/cvp"') && providersJs.includes('api + "/jobs"') && providersJs.includes("image_base64") && providersJs.includes("mask_base64") && providersJs.includes("grow_mask_by") && providersJs.includes("ref_strength"), "the CVP format must submit the plugin's capabilities with a reference weight and a mask");
+// A capability is named by its id, never by the model behind it: swapping the
+// model must not require a new client. The plugin's own document is what tells
+// the client what a capability accepts and which fields it ignores, so the
+// client reads /cvp/info instead of assuming either.
+assert.ok(providersJs.includes("capability: capability") && !/task: task,/.test(providersJs), "a job must be submitted under its capability id, not the retired task field");
+assert.ok(providersJs.includes('"/cvp/info"') && providersJs.includes('cvpRemember') && providersJs.includes("capabilitySizes"), "testing the connection must read the plugin's information endpoint and keep what it says");
+assert.ok(providersJs.includes('"/jobs/" + encodeURIComponent(jobId) + "/progress"') && providersJs.includes("queue_position"), "the wait must poll the light progress call and may only count the queue");
+assert.ok(providersJs.includes('if (!cvpIgnores(capability, "negative_prompt"))') && providersJs.includes("function cvpIgnores"), "a capability that declares a field ignored must not be sent it");
+assert.ok(!providersJs.includes("detail.progress"), "a percentage must never be drawn from a progress response that does not carry one");
 assert.ok(!providersJs.includes('id: "comfyui"') && !providersJs.includes("/view?filename=") && providersJs.includes("output.url"), "the retired workflow contract and the ComfyUI /view endpoint must be gone; the plugin serves its own images");
 assert.ok(providersJs.includes("cvpStrength") && providersJs.includes("base * (value / 0.8)"), "the reference weight must scale from the per-task default while the artwork slider stays neutral at 80%");
 assert.ok(settingsJs.includes("SLOT_TABS") && settingsJs.includes('["inpaint"') && settingsJs.includes("aspectField") && !settingsJs.includes("a1x") && !settingsJs.includes("a1x-profile"), "the model dialog must configure the three CVP tasks, show the locked aspect row, and carry no A1X preset");
@@ -130,32 +138,18 @@ assert.match(editorCss, /\.draw-options\.is-mask \.local-prompt-options\{flex:1 
 assert.ok(imageEngineJs.includes('masking && (requested === "quick" || !requested) ? "inpaint"') && imageEngineJs.includes("canvasInput.composeMask(false)") && !imageEngineJs.includes('slot !== "quality" && canvasInput.hasMask()'), "an active mask must switch quick draw to the local-redraw task and submit the mask");
 assert.ok(editorJs.includes("node(\"auto-toggle\").disabled = masking") && editorJs.includes("node(\"overlay-toggle\").disabled = masking") && editorJs.includes('node("background-color").hidden = maskMode'), "local mode must disable auto, overlay and the background control");
 assert.ok(editorJs.includes("app.state.localPrompt") && editorJs.includes("hasResultImage()") && editorJs.includes("is-disabled"), "local mode must require a result and keep a separate description");
-assert.ok(imageEngineJs.includes('app.utils.composePrompt("", english(app.state.localPrompt))') && !imageEngineJs.includes("composePrompt(app.state.prompt, masking ?") && imageEngineJs.includes("if (app.state.maskMode || !app.state.autoGenerate"), "a local redraw must submit the local description only, never the artwork-wide prompt, and skip auto generation");
-// Every checkpoint here pairs with an English-trained text encoder, so the string
-// that leaves is the translation, and the only thing that makes one is saving a
-// prompt. A render reads the cache and never calls the translator itself.
-const engineRunBody = imageEngineJs.slice(imageEngineJs.indexOf("async function run("), imageEngineJs.indexOf("async function run(") + 3200);
-assert.ok(engineRunBody.includes("english(app.state.prompt)") && engineRunBody.includes("english(app.state.negativePrompt)") && engineRunBody.includes("english(app.state.localPrompt)") && !engineRunBody.includes("translate.translate("), "a render must submit the cached English of all three prompt fields without triggering a translation");
-assert.ok(engineRunBody.includes('app.components.ui.toast(') && engineRunBody.includes("hasCjk(english(") && engineRunBody.includes("提示词只能使用英文,请检查翻译大模型设置"), "an untranslated prompt must warn at the bottom of the screen on every drawing instead of silently sampling Chinese");
-assert.ok(translateJs.includes("async function probe(config)") && translateJs.includes("hasCjk(entry.text)") && translateJs.includes('"vibedraw-translations/v1"') && translateJs.includes("async function load()") && translateJs.includes("function persist()") && translateJs.includes("/vibedraw/v1/translate"), "translations must outlive the page, and the tab must be able to ask the plugin whether they work");
-assert.ok(translateJs.includes("if (!key || !hasCjk(key)) return key;") && translateJs.includes("!cache[value]"), "an English prompt must pass through untouched and a known translation must never be asked for twice");
-assert.ok(!/setTimeout|addEventListener/.test(translateJs), "translation must run on demand only: no typing timer and no live listener");
-assert.ok(appJs.includes("await app.services.translate.load()"), "the app must restore the last translations before the first render can read them");
-// The translation tab exists for a Chinese interface, offers the plugin as its only
-// format, borrows the one shared CVP connection rather than owning a copy, and can
-// be tested without generating an image.
-assert.ok(settingsJs.includes('var TRANSLATE_TAB = ["translate", "翻译", "Translation"]') && settingsJs.includes('function wantsTranslateTab() { return app.i18n.language() === "zh"; }'), "the translation tab must exist for a Chinese interface");
-assert.ok(settingsJs.includes('SLOT_TABS.concat([TRANSLATE_TAB])') && settingsJs.includes('data-slot-tab="'), "the translation tab must sit beside the three task tabs");
-const translateCardBody = settingsJs.slice(settingsJs.indexOf("var card = translating"), settingsJs.indexOf("      : '<div data-model-card="));
-assert.ok(translateCardBody.includes("ComfyUI Vibedraw Plugin") && !translateCardBody.includes('select("protocol"'), "the translation tab must offer the plugin as the only API format");
-assert.ok(translateCardBody.includes('input("endpoint"') && translateCardBody.includes("secretField") && translateCardBody.includes("sharedHelp"), "the translation tab must carry the shared plugin address and password");
-assert.ok(translateCardBody.includes("data-test-translate") && settingsJs.includes("app.services.translate.probe(shared)"), "the translation tab must be testable without generating an image");
-assert.ok(settingsJs.includes("if (sharedField) shared[field.name] = value;") && settingsJs.includes("if (!translating) draft[slot][field.name] = value;"), "the translation tab must write the one shared connection and own no task of its own");
-const settingsSaveBody = settingsJs.slice(settingsJs.indexOf("function workSettings"), settingsJs.indexOf("function about("));
-assert.ok(/hasCjk\(value\)/.test(settingsSaveBody) && settingsSaveBody.includes("app.services.translate.translated(") && settingsSaveBody.includes("await app.services.translate.translate("), "artwork settings must translate only what has Chinese and not repeat a translation it already has");
-assert.ok(settingsJs.includes('data-translate-now="prompt"') && settingsJs.includes('data-translate-now="negativePrompt"'), "both artwork prompt fields must offer the translate-now action");
-assert.ok(settingsJs.includes("id=\"prompt-english\"") && settingsJs.includes("id=\"negativePrompt-english\""), "both artwork prompt fields must show the English of the last translation");
-assert.ok(editorJs.includes("data-translate-now>") && editorJs.includes("app.services.translate.translated("), "the local description must offer the same translate-now action and must not repeat a translation");
+assert.ok(imageEngineJs.includes('app.utils.composePrompt("", app.state.localPrompt)') && !imageEngineJs.includes("composePrompt(app.state.prompt, masking ?") && imageEngineJs.includes("if (app.state.maskMode || !app.state.autoGenerate"), "a local redraw must submit the local description only, never the artwork-wide prompt, and skip auto generation");
+// The prompt leaves exactly as it was written. Translating is the backend's
+// job now: it owns the translator and its memory, it translates on submit when
+// a text encoder needs English, and it reports what it did through the job's
+// translated / prompt / prompt_source. A second mechanism here would be a
+// second answer to the same fact, and the two would disagree eventually.
+const engineRunBody = imageEngineJs.slice(imageEngineJs.indexOf("async function run("), imageEngineJs.indexOf("running = true; queuedSlot = \"\";"));
+assert.ok(engineRunBody.includes("app.state.localPrompt") && engineRunBody.includes("app.state.negativePrompt") && engineRunBody.includes("app.state.prompt") && engineRunBody.includes("RENDER_PROMPT") && !engineRunBody.includes("english(") && !engineRunBody.includes("app.services.translate"), "the engine must hand over the prompt as written and take no part in translating it");
+// The whole client-side translation mechanism is retired: the plugin does it on
+// submit, so there is nothing here that could fall out of step with the plugin.
+assert.ok(!/services\.translate|hasCjk|TRANSLATE_TAB|data-translate-now|translate\.probe/.test(settingsJs + editorJs + imageEngineJs + appJs + providersJs), "no client file may keep the retired translation mechanism");
+assert.ok(!html.includes("translate.js") && !fs.existsSync(path.join(root, "app/services/translate.js")), "the retired translation service must be gone, not merely unused");
 assert.ok(editorJs.includes("app.state.maskVisible = Number(event.target.value) >= 50") && editorJs.includes("app.state.maskVisible = app.state.maskVisible === false") && editorJs.includes('node("opacity-target-label").textContent = masking ? t("蒙版层显示（0 或 100）"'), "inside local redraw the eye and the slider must drive the mask layer only");
 assert.ok(editorJs.includes('node("result-opacity").disabled = masking ? false') && editorJs.includes('visibility.disabled = masking ? false : !hasResult') && !editorJs.includes("成图固定不透明"), "local redraw must keep both controls usable and must never label the slider with the result opacity");
 assert.ok(canvasJs.includes("function captureComposition(overrides)") && canvasJs.includes("options.withResult ? { localMode: true } : null") && imageEngineJs.includes("if (masking) referenceOptions.withResult = true"), "a local redraw must reference the decorated result on purpose instead of inheriting the mode flag");

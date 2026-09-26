@@ -1,11 +1,11 @@
 {
   "schema": 2,
-  "happId": "com.zhyuzh.vibedraw",
+  "happId": "life.airen.vibedraw",
   "name": "VibeDraw",
   "author": "zhyuzh",
   "version": {
-    "code": 75,
-    "name": "0.4.37"
+    "code": 76,
+    "name": "0.5.0"
   },
   "entry": "index.html",
   "routing": "hash",

@@ -8,7 +8,8 @@ namespace, and the settings dialog feeds them to the host file writer, which han
 the user the system save dialog. What lands on disk is byte-for-byte the archive
 `release/vibedraw-comfyui-plugin-v<version>.zip` holds — nothing is downloaded.
 
-The version comes from tools/package-plugin.py so the two stay in step.
+The version comes from comfyui-plugin/vibedraw_comfy/version.py — the same file
+tools/package-plugin.py reads — so the two stay in step.
 
 Usage:
   python3 tools/embed-plugin.py           # rewrite app/assets/comfyui-plugin.js
@@ -24,15 +25,15 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PACKAGER = ROOT / "tools" / "package-plugin.py"
+VERSION_FILE = ROOT / "comfyui-plugin" / "vibedraw_comfy" / "version.py"
 OUTPUT = ROOT / "app" / "assets" / "comfyui-plugin.js"
 LINE_CHARS = 96
 
 
 def plugin_version() -> str:
-    match = re.search(r'^VERSION = "([^"]+)"', PACKAGER.read_text(encoding="utf-8"), re.MULTILINE)
+    match = re.search(r'^__version__ = "([^"]+)"', VERSION_FILE.read_text(encoding="utf-8"), re.MULTILINE)
     if not match:
-        raise SystemExit(f"no VERSION found in {PACKAGER.relative_to(ROOT)}")
+        raise SystemExit(f"no __version__ found in {VERSION_FILE.relative_to(ROOT)}")
     return match.group(1)
 
 

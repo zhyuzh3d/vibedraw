@@ -167,7 +167,6 @@ app.components.canvas = {
 };
 app.services.providers = { generate: (config, input) => { generationConfigs.push(config); inputs.push(input); return new Promise(resolve => pending.push(resolve)); } };
 app.services.store.scheduleCanvasSave = () => {};
-load("app/services/translate.js");
 load("app/services/image-engine.js");
 app.services.imageEngine.init(app.components.canvas);
 await assert.rejects(() => app.services.imageEngine.internals.withDeadline(new Promise(() => {}), 5), /生成等待超时/);
@@ -228,39 +227,22 @@ assert.equal(generationConfigs.at(-1).width, 1024); assert.equal(generationConfi
 assert.equal(inputs.at(-1).maskDataUrl, null); assert.equal(inputs.at(-1).openAiMaskDataUrl, null);
 pending.shift()({ src: "render-1024" }); await render;
 assert.equal(events.at(-1).slot, "upscale", "a validated render must be delivered as the upscale result");
-// No checkpoint here carries a text encoder that reads Chinese, so the string
-// that leaves is the English of the last saved prompt. The cache is a lookup:
-// this path never asks the translator for anything, and an English prompt is
-// handed over exactly as the user wrote it.
+// The prompt leaves exactly as it was written, in either language. Deciding
+// whether a model can read it belongs to the backend now: it owns the translator
+// and its memory, it translates on submit when a text encoder needs English, and
+// it reports what it did through the job's translated / prompt / prompt_source.
+// The client keeps no cache to fall out of step with it, blocks nothing, and
+// never rewords what the user typed.
 Object.assign(app.config.quick, { endpoint: "http://192.168.1.2:8188", protocol: "cvp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 8 });
-const translate = app.services.translate;
-assert.ok(translate.hasCjk("一只蓝色的水晶鸟") && !translate.hasCjk("a fox in snow"), "only a prompt with CJK characters needs a translation");
-translate.internals.cache["一只蓝色的水晶鸟"] = "a blue crystal bird";
-translate.internals.cache["模糊、变形"] = "blurry, distorted";
 app.state.prompt = "一只蓝色的水晶鸟"; app.state.negativePrompt = "模糊、变形";
-const translatedRun = app.services.imageEngine.run("quick", false);
+const chineseRun = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
-assert.equal(inputs.at(-1).prompt, "a blue crystal bird", "a Chinese prompt must be submitted as the English of its last translation");
-assert.equal(inputs.at(-1).negativePrompt, "blurry, distorted", "the negative prompt must be translated as well");
-pending.shift()({ src: "translated" }); await translatedRun;
+assert.equal(inputs.at(-1).prompt, "一只蓝色的水晶鸟", "a Chinese prompt must be submitted as written, for the backend to translate");
+assert.equal(inputs.at(-1).negativePrompt, "模糊、变形", "the negative prompt travels as written too");
+pending.shift()({ src: "chinese" }); await chineseRun;
 app.state.prompt = "a fox in snow"; app.state.negativePrompt = "";
 const englishRun = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(inputs.at(-1).prompt, "a fox in snow", "an English prompt must be submitted verbatim, never reworded");
 pending.shift()({ src: "english" }); await englishRun;
-const toasts = [];
-app.components.ui = { toast: (message, type) => toasts.push([String(message), String(type || "")]) };
-app.state.prompt = "一只还没译过的猫";
-const untranslatedRun = app.services.imageEngine.run("quick", false);
-await new Promise(resolve => setTimeout(resolve, 5));
-assert.equal(inputs.at(-1).prompt, "一只还没译过的猫", "an untranslated prompt must still submit instead of blocking the user");
-assert.equal(toasts.length, 1, "every drawing with Chinese in its prompt must warn once");
-assert.match(toasts[0][0], /提示词只能使用英文,请检查翻译大模型设置/, "the warning must name the English-only rule and the settings that fix it");
-assert.equal(toasts[0][1], "error", "the warning must be the error style rather than the success check mark");
-pending.shift()({ src: "untranslated" }); await untranslatedRun;
-app.state.prompt = "a fox again";
-const quietRun = app.services.imageEngine.run("quick", false);
-await new Promise(resolve => setTimeout(resolve, 5));
-assert.equal(toasts.length, 1, "a drawing with an English prompt must not warn at all");
-pending.shift()({ src: "quiet" }); await quietRun;
-console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue, prompt translation)");
+console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue, raw prompts)");

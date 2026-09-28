@@ -64,13 +64,27 @@
     cache.set(key, src);
     return src;
   }
+  // A generation is filed in Hermit's file store the moment it arrives rather than on
+  // the next autosave: the reference handed back here is kept as the document cover, so
+  // a history card shows the newest picture even if the app is closed right away.
+  // Failing to file it returns null instead of a reference that points at nothing, which
+  // is what lets the caller keep the previous cover rather than lose the card's image.
+  async function coverFrom(image) {
+    if (!image) return null;
+    try { if (!image.asset && image.src) image.asset = await persist(image.src, null); } catch (_) {}
+    if (!image.asset && !image.logicalFileId) return null;
+    return { asset: image.asset || null, logicalFileId: image.logicalFileId || "", createdAt: image.createdAt || Date.now() };
+  }
   function references(snapshot) {
     var refs = [];
     // The last render is artwork data and lives in the record, so its files must
-    // survive the cleanup that runs when the artwork's references change.
+    // survive the cleanup that runs when the artwork's references change. The cover is
+    // artwork data too: it is the last generated picture, and cleanup must never reclaim
+    // it while the artwork that shows it still exists.
     var items = (snapshot && snapshot.objects || []).concat(
       snapshot && snapshot.result ? [snapshot.result] : [],
-      snapshot && snapshot.render ? [snapshot.render] : []);
+      snapshot && snapshot.render ? [snapshot.render] : [],
+      snapshot && snapshot.cover ? [snapshot.cover] : []);
     items.forEach(function (item) {
       if (item.asset && item.asset.parts) refs = refs.concat(item.asset.parts);
       if (item.logicalFileId) refs.push(item.logicalFileId);
@@ -92,5 +106,5 @@
   }
   function clearCache() { cache.clear(); }
   function performance() { return { cache: cache.stats(), inFlight: inFlight.size }; }
-  app.services.assets = { persist: persist, resolve: resolve, cleanup: cleanup, references: references, clearCache: clearCache, performance: performance };
+  app.services.assets = { persist: persist, resolve: resolve, coverFrom: coverFrom, cleanup: cleanup, references: references, clearCache: clearCache, performance: performance };
 })(window.vibedraw);

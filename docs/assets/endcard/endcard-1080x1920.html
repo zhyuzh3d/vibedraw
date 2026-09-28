@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>VibeDraw 片尾卡 1080x1920</title>
+<style>
+  :root{
+    --app:#ff2b92;            /* VibeDraw 主色 (官网 styles.css --app) */
+    --app-soft:#ff77ba;
+    --ink:#ffffff;
+    --dim:rgba(255,255,255,.58);
+    --line:rgba(255,255,255,.13);
+    --bg:#100a12;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:1080px;height:1920px;overflow:hidden;}
+  body{
+    background:var(--bg);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,sans-serif;
+    color:var(--ink);position:relative;-webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- 背景: 只有无边界光晕, 不放有形状的水印 ---------- */
+  .glow-a,.glow-b,.dots,.vign{position:absolute;pointer-events:none;}
+  .glow-a{width:1800px;height:1800px;left:-360px;top:-680px;border-radius:50%;
+    background:radial-gradient(circle,rgba(255,43,146,.30) 0%,rgba(255,43,146,.10) 42%,rgba(255,43,146,0) 68%);}
+  .glow-b{width:1600px;height:1600px;left:-260px;bottom:-780px;border-radius:50%;
+    background:radial-gradient(circle,rgba(130,60,220,.20) 0%,rgba(130,60,220,.06) 45%,rgba(130,60,220,0) 70%);}
+  .dots{inset:0;background-image:radial-gradient(rgba(255,255,255,.07) 1.6px,transparent 1.6px);
+    background-size:54px 54px;opacity:.5;}
+  .vign{inset:0;background:radial-gradient(ellipse at 50% 44%,rgba(0,0,0,0) 30%,rgba(0,0,0,.52) 100%);}
+
+  /* padding-bottom 留出页脚高度 ⇒ 主体在"页脚以上"的区域里真正居中 */
+  .stage{position:relative;height:100%;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;padding:0 92px 200px;}
+
+  /* ---------- 主品牌标 ---------- */
+  .mark{width:260px;height:260px;border-radius:58px;background:var(--app);
+    display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;
+    box-shadow:0 26px 84px rgba(255,43,146,.5),0 6px 22px rgba(0,0,0,.42);}
+  .mark::after{content:"";position:absolute;inset:0;
+    background:linear-gradient(160deg,rgba(255,255,255,.24),rgba(255,255,255,0) 56%);}
+  .mark svg{width:166px;height:166px;display:block;position:relative;}
+
+  .word{margin-top:58px;font-size:136px;font-weight:800;letter-spacing:-2.5px;line-height:1;}
+  .tag{margin-top:30px;font-size:58px;font-weight:600;color:var(--app-soft);letter-spacing:.5px;line-height:1.2;white-space:nowrap;}
+  /* 英文副标: 白色 + 标准粗细 */
+  .tag-en{margin-top:22px;font-size:34px;font-weight:400;color:#ffffff;letter-spacing:.4px;}
+
+  .rule{margin-top:92px;width:700px;height:1px;
+    background:linear-gradient(90deg,rgba(255,255,255,0),var(--line) 18%,var(--line) 82%,rgba(255,255,255,0));}
+
+  /* ---------- CTA (安全版: 只讲站内动作) ---------- */
+  .cta{margin-top:82px;display:flex;align-items:center;gap:30px;
+    padding:38px 56px;border-radius:32px;
+    background:linear-gradient(135deg,rgba(255,43,146,.18),rgba(255,43,146,.06));
+    border:1.5px solid rgba(255,43,146,.46);box-shadow:0 16px 50px rgba(255,43,146,.15);}
+  .cta svg{width:56px;height:56px;flex:0 0 auto;}
+  .cta-main{font-size:52px;font-weight:700;letter-spacing:.5px;line-height:1.16;}
+  .cta-sub{margin-top:12px;font-size:30px;font-weight:400;color:var(--dim);letter-spacing:.3px;}
+
+  /* ---------- "运行在" 双 logo lockup ---------- */
+  .lockup{margin-top:92px;display:flex;align-items:center;gap:48px;}
+  .lk{display:flex;flex-direction:column;align-items:center;gap:20px;}
+  .lk-ico{width:104px;height:104px;border-radius:20px;display:flex;align-items:center;justify-content:center;}
+  .lk-ico.v{background:var(--app);box-shadow:0 14px 38px rgba(255,43,146,.42);}
+  .lk-ico.v svg{width:62px;height:62px;display:block;}
+  /* Hermit 用官方图标本体(黑方 + 白 H); 深底上加一道极淡描边让方块轮廓读出来 */
+  .lk-ico.h img{width:104px;height:104px;display:block;border-radius:19.6px;
+    box-shadow:0 0 0 1.5px rgba(255,255,255,.22),0 14px 38px rgba(0,0,0,.5);}
+  .lk-name{font-size:29px;font-weight:600;color:var(--dim);letter-spacing:.5px;}
+  .lk-mid{font-size:29px;font-weight:500;color:rgba(255,255,255,.40);letter-spacing:1px;padding-bottom:49px;}
+
+  /* ---------- 页脚两行 ---------- */
+  .foot{position:absolute;left:0;right:0;bottom:78px;text-align:center;}
+  .f1{font-size:28px;font-weight:500;color:rgba(255,255,255,.52);letter-spacing:1.2px;}
+  .f2{margin-top:13px;font-size:35px;font-weight:600;color:rgba(255,255,255,.92);letter-spacing:.6px;}
+</style>
+</head>
+<body>
+  <div class="glow-a"></div>
+  <div class="glow-b"></div>
+  <div class="dots"></div>
+  <div class="vign"></div>
+
+  <div class="stage">
+    <!-- 主品牌标 -->
+    <div class="mark">
+      <svg viewBox="0 0 100 100" aria-label="VibeDraw">
+        <path d="M18 16 H38 L52 62 L66 16 H86 L60 88 H42 Z" fill="#ffffff"/>
+      </svg>
+    </div>
+
+    <div class="word">VibeDraw</div>
+    <div class="tag">实时生图，创意不能只靠提示词</div>
+    <div class="tag-en">Draw in real time. Draw what you mean.</div>
+
+    <div class="rule"></div>
+
+    <!-- CTA: 站内动作, 不放任何站外信息 -->
+    <div class="cta">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 21s-7.5-4.7-9.3-9.1C1.3 8.3 3.2 5 6.5 5c2 0 3.4 1.1 4.2 2.2l1.3 1.7 1.3-1.7C14.1 6.1 15.5 5 17.5 5c3.3 0 5.2 3.3 3.8 6.9C19.5 16.3 12 21 12 21z"
+              fill="#ff77ba"/>
+      </svg>
+      <div>
+        <div class="cta-main">开源 · 完全免费</div>
+        <div class="cta-sub">觉得有用就点个赞</div>
+      </div>
+    </div>
+
+    <!-- VibeDraw 运行在 Hermit 里 -->
+    <div class="lockup">
+      <div class="lk">
+        <div class="lk-ico v">
+          <svg viewBox="0 0 100 100"><path d="M18 16 H38 L52 62 L66 16 H86 L60 88 H42 Z" fill="#ffffff"/></svg>
+        </div>
+        <div class="lk-name">VibeDraw</div>
+      </div>
+      <div class="lk-mid">运行在</div>
+      <div class="lk">
+        <div class="lk-ico h"><img src="data:image/png;base64,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" alt="Hermit"></div>
+        <div class="lk-name">Hermit</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="f1">软件使用2.0时代 · HermitApp</div>
+    <div class="f2">你的软件，你做主，想怎么改就怎么改！</div>
+  </div>
+</body>
+</html>

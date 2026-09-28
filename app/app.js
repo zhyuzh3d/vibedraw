@@ -70,7 +70,9 @@
       if (snapshot.tool) app.features.editor.setTool(snapshot.tool);
       if (typeof snapshot.prompt === "string") {
         app.state.prompt = snapshot.prompt;
-        document.getElementById("prompt-display").textContent = snapshot.prompt;
+        // Same split as syncPromptDisplay: the pencil icon is a sibling of this label, so
+        // restoring must fill the label rather than wipe the tap target's whole content.
+        document.getElementById("prompt-display-text").textContent = snapshot.prompt;
       }
       app.state.selectedId = snapshot.selectedId || "";
       app.state.selectedIds = app.state.selectedId ? [app.state.selectedId] : [];

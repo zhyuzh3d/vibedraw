@@ -488,6 +488,14 @@
     var w = image.naturalWidth * scale, h = image.naturalHeight * scale;
     ctx.drawImage(image, (width - w) / 2, (height - h) / 2, w, h);
   }
+  // The opposite trade to drawContained: a frame that must reach its own edges crops the
+  // surplus instead of leaving it as background. Gallery cards use it so a card never shows
+  // a pale band beside the picture, whatever aspect the rendered image came back in.
+  function drawCovered(ctx, image, width, height) {
+    var scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+    var w = image.naturalWidth * scale, h = image.naturalHeight * scale;
+    ctx.drawImage(image, (width - w) / 2, (height - h) / 2, w, h);
+  }
   function drawImageObject(ctx, object) {
     var source = object.src || object.url;
     var image = object._imageSource === source && object._image && object._image.complete ? object._image : imageCache.get(source);
@@ -661,13 +669,45 @@
     setSelection([]);
     render(); commit();
   }
+  // Whether the arrows should be live. This is deliberately the same question moveLayer
+  // answers internally, so a group can never show an enabled arrow that then does nothing,
+  // and the answer flips on its own once the selection reaches the front or the back.
+  function canMoveLayer(direction) {
+    var ids = new Set(selectionIds());
+    if (!ids.size) return false;
+    return state.objects.some(function (object, index) {
+      if (!ids.has(object.id)) return false;
+      var neighbour = index + (direction > 0 ? 1 : -1);
+      return neighbour >= 0 && neighbour < state.objects.length && !ids.has(state.objects[neighbour].id);
+    });
+  }
+  // Layer order *is* the order of `state.objects`: each entry paints over the ones before
+  // it. A group is only several objects sharing a groupId, and tapping any member selects
+  // all of them, so "one layer" has to mean one step of the whole selection rather than one
+  // step of a single object. Every selected object therefore passes exactly one unselected
+  // neighbour and never another selected one, so the block advances as a unit while keeping
+  // its own internal order. Scanning towards the direction of travel is what makes that
+  // hold: an entry swapped backwards is never revisited by the same pass.
   function moveLayer(direction) {
-    if (selectionIds().length !== 1) return;
-    var index = state.objects.findIndex(function (object) { return object.id === state.selectedId; });
-    var target = index + direction;
-    if (index < 0 || target < 0 || target >= state.objects.length) return;
-    var object = state.objects.splice(index, 1)[0];
-    state.objects.splice(target, 0, object);
+    var ids = new Set(selectionIds());
+    if (!ids.size) return;
+    var moved = false, index, lifted;
+    if (direction > 0) {
+      for (index = state.objects.length - 2; index >= 0; index -= 1) {
+        if (!ids.has(state.objects[index].id) || ids.has(state.objects[index + 1].id)) continue;
+        lifted = state.objects.splice(index, 1)[0];
+        state.objects.splice(index + 1, 0, lifted);
+        moved = true;
+      }
+    } else {
+      for (index = 1; index < state.objects.length; index += 1) {
+        if (!ids.has(state.objects[index].id) || ids.has(state.objects[index - 1].id)) continue;
+        lifted = state.objects.splice(index, 1)[0];
+        state.objects.splice(index - 1, 0, lifted);
+        moved = true;
+      }
+    }
+    if (!moved) return;
     render(); commit();
   }
   function scaleSelected(factor) {
@@ -895,6 +935,9 @@
     state.result = saved.result || null;
     // The last render is part of the artwork, so it comes back with it.
     state.renderResult = saved.render || null;
+    // So does the cover: it is the last generated picture and the history card draws it,
+    // which is why it is restored even for a record whose result was cleared.
+    state.cover = saved.cover || null;
     setSelection([]);
     state.objects.forEach(function (object) {
       if (object.type === "image") { object.src = object.src || object.url; loadImage(object.src, true); }
@@ -904,9 +947,18 @@
   async function thumbnail(saved, target) {
     var size = 768, ctx = target.getContext("2d"); target.width = 288; target.height = 288;
     ctx.scale(288 / size, 288 / size); ctx.fillStyle = saved.background || "#fff"; ctx.fillRect(0, 0, size, size);
+    // The card shows the cover — the last generated picture — before anything else, and
+    // it is drawn from the filed reference rather than from whatever the sketch still
+    // holds. A cover whose files have gone falls through instead of blanking the card.
+    if (saved.cover && saved.cover.asset) {
+      try {
+        var coverSrc = await app.services.assets.resolve(saved.cover.asset), picture = await loadImage(coverSrc, false);
+        if (picture) { drawCovered(ctx, picture, size, size); return; }
+      } catch (_) {}
+    }
     if (saved.result && saved.result.asset) {
       var src = await app.services.assets.resolve(saved.result.asset), result = await loadImage(src, false);
-      if (result) drawContained(ctx, result, size, size);
+      if (result) drawCovered(ctx, result, size, size);
       return;
     }
     var layer = document.createElement("canvas"); layer.width = size; layer.height = size; var layerCtx = layer.getContext("2d");
@@ -928,6 +980,7 @@
     removeSelected: removeSelected,
     clear: clear,
     moveLayer: moveLayer,
+    canMoveLayer: canMoveLayer,
     scaleSelected: scaleSelected,
     groupSelected: groupSelected,
     ungroupSelected: ungroupSelected,

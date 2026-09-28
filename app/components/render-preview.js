@@ -3,8 +3,17 @@
   var root, stage, image, surface, zoom, adjustmentsPanel, transformTask, surfaceTask;
   var current = null, scale = 1, offsetX = 0, offsetY = 0;
   var pointers = {}, gesture = null, previousOverflow = "", stageRect = null, sourceReady = false;
-  var adjustments = { resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
-  var adjustmentKeys = ["resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity"];
+  // Brightness and contrast are not offered here, so the preview always draws with
+  // them neutral: the shared filter builder must receive numbers, and the four
+  // sliders this panel does own are the ones worth carrying.
+  var NEUTRAL = { resultBrightness: 100, resultContrast: 100 };
+  var adjustments = { resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
+  var adjustmentKeys = ["resultSaturation", "resultHue", "resultGlow", "resultClarity"];
+  //: Whether the adjustments reach the picture at all. It is part of the same draft
+  //: as the sliders' values: it starts from the saved render default, governs this
+  //: preview only, and is written where the other values are written — the
+  //: save-default button.
+  var adjustmentsEnabled = true;
 
   function point(event) { return { x: event.clientX, y: event.clientY }; }
   function pointerValues() { return Object.keys(pointers).map(function (key) { return pointers[key]; }); }
@@ -64,15 +73,17 @@
     var result = {};
     adjustmentKeys.forEach(function (key) {
       var value = Number(app.config && app.config.canvas && app.config.canvas[key]);
-      result[key] = Number.isFinite(value) ? value : ({ resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 }[key]);
+      result[key] = Number.isFinite(value) ? value : ({ resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 }[key]);
     });
     return result;
   }
-  function resetAdjustments() { adjustments = { resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 }; syncAdjustments(); surfaceTask.request(); }
+  function configuredEffects() { return !(app.config && app.config.canvas && app.config.canvas.resultAdjustmentsEnabled === false); }
+  function resetAdjustments() { adjustments = { resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 }; syncAdjustments(); surfaceTask.request(); }
   function closeAdjustments() { adjustmentsPanel.hidden = true; document.getElementById("render-preview-adjust").setAttribute("aria-expanded", "false"); }
   async function saveAdjustmentsDefault() {
     var config = app.utils.copy(app.config);
     adjustmentKeys.forEach(function (key) { config.canvas[key] = Number(adjustments[key]); });
+    config.canvas.resultAdjustmentsEnabled = adjustmentsEnabled !== false;
     await app.services.store.saveConfig(config);
     app.components.ui.toast(app.i18n.text("已保存为渲染图默认调色", "Saved as the render color default"));
   }
@@ -83,9 +94,11 @@
     var context = surface.getContext("2d");
     context.clearRect(0, 0, surface.width, surface.height);
     app.components.canvas.drawResult(context, image, surface.width, surface.height, false, {
-      resultAdjustmentsEnabled: true,
-      resultBrightness: adjustments.resultBrightness,
-      resultContrast: adjustments.resultContrast,
+      // The switch is what makes the panel reversible: with it off the preview draws
+      // the plain render, which is the only way to see what the sliders did.
+      resultAdjustmentsEnabled: adjustmentsEnabled !== false,
+      resultBrightness: NEUTRAL.resultBrightness,
+      resultContrast: NEUTRAL.resultContrast,
       resultSaturation: adjustments.resultSaturation,
       resultHue: adjustments.resultHue,
       resultGlow: adjustments.resultGlow,
@@ -93,6 +106,10 @@
     });
     surface.hidden = false;
     apply();
+  }
+  function syncEffects() {
+    var toggle = document.getElementById("render-preview-adjust-enabled");
+    if (toggle) toggle.checked = adjustmentsEnabled !== false;
   }
   function toggleAdjustments() {
     var button = document.getElementById("render-preview-adjust");
@@ -113,6 +130,8 @@
     document.getElementById("render-preview-adjust-close").onclick = closeAdjustments;
     document.getElementById("render-preview-adjust-reset").onclick = resetAdjustments;
     document.getElementById("render-preview-adjust-default").onclick = app.components.ui.action(saveAdjustmentsDefault);
+    var effectsToggle = document.getElementById("render-preview-adjust-enabled");
+    if (effectsToggle) effectsToggle.onchange = function () { adjustmentsEnabled = effectsToggle.checked; surfaceTask.request(); };
     adjustmentKeys.forEach(function (key) {
       var input = document.querySelector('[data-render-adjust="' + key + '"]');
       if (!input) return;
@@ -128,7 +147,7 @@
   }
   function open(result) {
     if (!result || !result.src) return;
-    current = result; adjustments = configuredAdjustments(); syncAdjustments();
+    current = result; adjustments = configuredAdjustments(); adjustmentsEnabled = configuredEffects(); syncAdjustments(); syncEffects();
     previousOverflow = document.body.style.overflow; document.body.style.overflow = "hidden";
     root.hidden = false; root.classList.add("is-open"); adjustmentsPanel.hidden = true; document.getElementById("render-preview-adjust").setAttribute("aria-expanded", "false");
     sourceReady = false; image.hidden = true; surface.hidden = true; image.removeAttribute("src"); surface.style.transform = ""; reset(); image.src = result.src;

@@ -42,6 +42,17 @@ assert.equal(internals.cvpTask({ slot: "inpaint" }), "inpaint");
 assert.equal(internals.cvpTask({ capability: "upscale", slot: "quick" }), "upscale", "the capability field wins over the slot");
 assert.equal(internals.cvpTask({ task: "upscale", slot: "quick" }), "upscale");
 assert.equal(internals.cvpTask({ slot: "unexpected" }), "quick");
+// The ComfyUI plugin travels with the app, so choosing that API format fills the
+// server address in: blank, and the example an earlier version offered, both
+// resolve to the current example — while an address the user typed is kept.
+const providers = context.vibedraw.services.providers;
+assert.equal(providers.exampleEndpoint, "http://192.168.1.1:8188");
+assert.equal(providers.resolveEndpoint(""), providers.exampleEndpoint);
+assert.equal(providers.resolveEndpoint("   "), providers.exampleEndpoint);
+assert.equal(providers.resolveEndpoint("http://192.168.1.2:8188"), providers.exampleEndpoint, "an address only an earlier version offered is not a choice the user made");
+assert.equal(providers.resolveEndpoint("http://192.168.124.31:8188"), "http://192.168.124.31:8188");
+assert.equal(providers.preset("cvp", "quick").endpoint, providers.exampleEndpoint);
+assert.equal(providers.preset("cvp", "upscale").endpoint, providers.exampleEndpoint);
 assert.equal(internals.cvpStrength({ refStrength: 0.55 }, 0.8), 0.55);
 assert.ok(Math.abs(internals.cvpStrength({ refStrength: 0.3 }, 0.4) - 0.15) < 1e-9, "half the artwork setting must halve the reference weight");
 assert.equal(internals.cvpStrength({ refStrength: 0.55 }, 1.6), 0.95, "the reference weight must clamp at the maximum");

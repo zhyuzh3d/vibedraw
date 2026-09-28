@@ -1,6 +1,6 @@
 (function (app) {
   "use strict";
-  var t = app.i18n.text, ui, canvas, initial, imageSource = "", resizeTask, canvasSyncTask, opacityAnimationFrame = 0, resultOpacityAnimationFrame = 0, renderResultPresent = false, canvasPanX = 0, promptDrag = null, maskMode = false;
+  var t = app.i18n.text, ui, canvas, initial, imageSource = "", resizeTask, canvasSyncTask, opacityAnimationFrame = 0, resultOpacityAnimationFrame = 0, renderResultPresent = false, canvasPanX = 0, maskMode = false;
   var fullscreenPan = { timer: 0, active: false, moved: false, suppressClick: false, startX: 0, startPan: 0, wasCollapsed: false };
   var adjustmentNames = ["resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity"];
   var neutralAdjustments = { resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
@@ -172,6 +172,24 @@
       syncLocalPrompt(); app.services.store.scheduleCanvasSave(); ui.close();
       if (!app.state.localPrompt) { status(t("局部描述已清空", "Local description cleared")); return; }
       status(t("局部描述已保存，点「快速」或随机按钮重绘这块区域", "Local description saved. Use Fast or the dice to redraw this area"));
+    });
+  }
+  function editPrompt() {
+    var root = ui.open({ mode: "center", title: t("画面描述", "Image description"), html: '<label class="field"><span>' + t("想画成什么样", "What the picture should look like") + '</span><textarea id="prompt-input" rows="3"></textarea></label><p class="field-help">' + t("中英文都行,写中文由插件在提交那一刻自动译成英文。", "Chinese or English both work; the plugin translates a Chinese one as the job is submitted.") + '</p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
+    var input = root.querySelector("#prompt-input");
+    input.value = String(app.state.prompt || "");
+    input.placeholder = t("例如：一只蓝色的水晶鸟飞过雪山,清晨的光", "e.g. a blue crystal bird over a snowy mountain at dawn");
+    root.querySelector("[data-cancel]").onclick = ui.close;
+    root.querySelector("[data-save]").onclick = ui.action(async function () {
+      var next = input.value.trim();
+      ui.close();
+      if (next === String(app.state.prompt || "").trim()) return;
+      app.state.prompt = next; syncPromptDisplay(); app.services.store.scheduleCanvasSave();
+      // The description is what the model is asked to draw, so a changed one is a
+      // reason to draw again — and it takes the same path a brush stroke takes, so
+      // mask mode, auto off and an unconfigured service all leave it alone.
+      app.services.imageEngine.schedule();
+      status(next ? t("画面描述已保存", "Image description saved") : t("画面描述已清空", "Image description cleared"));
     });
   }
   function bindOptions() {
@@ -364,7 +382,6 @@
   }
   function syncSelection() {
     var ids = app.state.selectedIds && app.state.selectedIds.length ? app.state.selectedIds : app.state.selectedId ? [app.state.selectedId] : [];
-    var selected = ids.length === 1 ? app.state.objects.findIndex(function (object) { return object.id === ids[0]; }) : -1;
     var selectedObjects = app.state.objects.filter(function (object) { return ids.indexOf(object.id) >= 0; });
     var groupedObjects = selectedObjects.filter(function (object) { return Boolean(object.groupId); });
     var groupIds = groupedObjects.map(function (object) { return object.groupId; }).filter(function (id, index, values) { return values.indexOf(id) === index; });
@@ -378,7 +395,11 @@
     colorSwatch.style.backgroundColor = strokeColors.length ? strokeColors[0] : "";
     colorSwatch.style.backgroundImage = strokeColors.length > 1 ? "linear-gradient(135deg,#ee4f85 0 50%,#38a9e8 50%)" : "none";
     node("group-selected").disabled = ids.length < 2 || alreadyOneGroup; node("ungroup-selected").disabled = groupedObjects.length === 0;
-    node("layer-down").disabled = ids.length !== 1 || selected <= 0; node("layer-up").disabled = ids.length !== 1 || selected < 0 || selected === app.state.objects.length - 1;
+    // Layering asks the canvas itself whether anything can still move, so the arrows stay
+    // live for a group (all of its members arrive selected at once) and grey out only once
+    // the block as a whole has reached the front or the back. Asking the mutator's own
+    // predicate is what keeps the two from drifting apart.
+    node("layer-down").disabled = !canvas.canMoveLayer(-1); node("layer-up").disabled = !canvas.canMoveLayer(1);
     node("duplicate-selected").setAttribute("aria-label", ids.length > 1 ? t("复制所选元素", "Duplicate selection") : t("复制对象", "Duplicate"));
     node("delete-selected").setAttribute("aria-label", ids.length > 1 ? t("删除所选元素", "Delete selection") : t("删除对象", "Delete object"));
   }
@@ -567,6 +588,13 @@
     node("stroke-color").style.backgroundColor = app.state.color; node("background-color").style.backgroundColor = app.state.background;
     node("stroke-opacity").value = String(Math.round(app.state.opacity * 100)); node("stroke-opacity-value").textContent = node("stroke-opacity").value + "%";
   }
+  function syncPromptDisplay() {
+    var display = node("prompt-display"), label = node("prompt-display-text"), text = String(app.state.prompt || "").trim();
+    // Write the label inside the tap target, not the target itself: the pencil icon is a
+    // sibling of this label, so setting the target's textContent would silently erase it.
+    label.textContent = text || t("点击填写画面描述", "Tap to add an image description");
+    display.classList.toggle("is-placeholder", !text);
+  }
   function syncPromptStrength() {
     var value = Math.max(20, Math.min(100, Math.round(Number(app.state.strength || 0.8) * 100)));
     node("prompt-strength").value = String(value); node("prompt-strength-value").textContent = value + "%";
@@ -579,29 +607,25 @@
   }
   function bindPromptControls() {
     var display = node("prompt-display"), strength = node("prompt-strength");
-    display.addEventListener("pointerdown", function (event) {
-      if (event.button !== undefined && event.button !== 0) return;
-      promptDrag = { id: event.pointerId, x: event.clientX, scrollLeft: display.scrollLeft, moved: false };
-      if (display.setPointerCapture && event.pointerId !== undefined && event.isTrusted) display.setPointerCapture(event.pointerId);
-    });
-    display.addEventListener("pointermove", function (event) {
-      if (!promptDrag || promptDrag.id !== event.pointerId) return;
-      var delta = event.clientX - promptDrag.x;
-      if (Math.abs(delta) > 2) promptDrag.moved = true;
-      if (!promptDrag.moved) return;
-      event.preventDefault();
-      display.scrollLeft = promptDrag.scrollLeft - delta;
-    });
-    display.addEventListener("pointerup", function () { promptDrag = null; });
-    display.addEventListener("pointercancel", function () { promptDrag = null; });
+    // The description is a label, not a scroll pane: it is clipped with an ellipsis
+    // and a tap opens it for editing instead of dragging it sideways.
+    display.onclick = editPrompt;
+    display.onkeydown = function (event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault(); editPrompt();
+    };
     strength.addEventListener("input", function () { setPromptStrength(strength.value); });
-    node("prompt-strength-default").onclick = function () { setPromptStrength(80); };
+    // Both controls ask the model for something different, so each ends with the
+    // automatic pass. `change` rather than `input` for the slider: one redraw when
+    // the finger comes up, not one per pixel of the drag. schedule() is the guard —
+    // mask mode, auto off and an unconfigured service all make it a no-op.
+    strength.addEventListener("change", function () { app.services.imageEngine.schedule(); });
+    node("prompt-strength-default").onclick = function () { setPromptStrength(80); app.services.imageEngine.schedule(); };
   }
   function syncAll() {
     app.i18n.dom(); syncTitle();
     syncColors(); node("brush-size").value = app.state.size; node("brush-size-value").textContent = app.state.size;
-    var promptDisplay = node("prompt-display"), promptText = String(app.state.prompt || "").trim();
-    promptDisplay.textContent = promptText || t("在作品设置中填写画面描述", "Add an image description in Artwork settings"); promptDisplay.classList.toggle("is-placeholder", !promptText); syncPromptStrength();
+    syncPromptDisplay(); syncPromptStrength();
     node("history-count").textContent = app.services.store.list().length;
     node("save-state").textContent = app.services.store.meaningful() ? t("已保存", "Saved") : t("自动保存", "Autosave");
     syncAuto(); syncOverlayGenerate(); syncSeedLock(); syncAdjustments(); syncCanvas(); syncRenderResult(); syncMaskUi(); setTool(app.state.tool, true); setFullscreenToolsCollapsed(document.body.classList.contains("fullscreen-tools-collapsed")); resizeStage();

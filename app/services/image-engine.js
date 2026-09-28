@@ -137,6 +137,12 @@
       if (slot === "upscale") app.state.renderResult = generated; else app.state.result = generated;
       succeeded = true;
       app.events.emit("generation:done", generated);
+      // The picture goes into Hermit's file store the moment it arrives, not on the next
+      // autosave, and that reference becomes this document's cover: the card keeps showing
+      // the newest generation even if the app is closed right after it. The cover shares
+      // the result's reference — one picture, filed once — and a filing that fails leaves
+      // the previous cover in place rather than pointing the card at files that are gone.
+      app.state.cover = (await app.services.assets.coverFrom(generated)) || app.state.cover;
       if (slot !== "upscale") app.services.store.scheduleCanvasSave();
     } catch (error) {
       if (token === generation) app.events.emit("generation:error", error);

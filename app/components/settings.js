@@ -83,7 +83,24 @@
   }
   function open(kind) {
     ui = app.components.ui;
-    if (kind === "models") { draft = u.copy(app.config); original = JSON.stringify(draft); slot = "quick"; renderModels(); }
+    if (kind === "models") {
+      draft = u.copy(app.config);
+      // The ComfyUI plugin travels with this app, so a CVP task whose address nobody
+      // ever chose — blank, or an example an earlier version offered — starts from
+      // the plugin's own address instead of an empty box. Filling it before the
+      // snapshot below is what keeps opening the sheet from looking like an unsaved
+      // edit, and it is a real value, so the test button works before anything is
+      // saved.
+      var cvpUsed = SLOTS.some(function (name) { return draft[name] && draft[name].protocol === "cvp"; });
+      if (cvpUsed) {
+        var connection = draft.connection || (draft.connection = { endpoint: "", apiKey: "", customHeaders: "" });
+        connection.endpoint = app.services.providers.resolveEndpoint(connection.endpoint);
+        SLOTS.forEach(function (name) {
+          if (draft[name] && draft[name].protocol === "cvp") draft[name].endpoint = connection.endpoint;
+        });
+      }
+      original = JSON.stringify(draft); slot = "quick"; renderModels();
+    }
     else if (kind === "work" || kind === "canvas") workSettings();
     else if (kind === "preferences") preferences();
     else if (kind === "help") help();
@@ -125,7 +142,7 @@
     var card = '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
         select("protocol", t("接口模式", "API format"), protocol, choices) +
         aspectField(model, slot) +
-        input("endpoint", t("服务器地址", "Server address"), cvp ? shared.endpoint : model.endpoint, "url", cvp ? "http://192.168.1.2:8188" : "https://…") +
+        input("endpoint", t("服务器地址", "Server address"), cvp ? shared.endpoint : model.endpoint, "url", cvp ? app.services.providers.exampleEndpoint : "https://…") +
         secretField +
         (cvp ? sharedHelp : '') +
         (!cvp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +

@@ -164,6 +164,14 @@
   //: The plugin names capabilities semantically, not after a model. A slot is
   //: the app's own word for the same thing, and the map keeps the two apart.
   var CVP_CAPABILITY = { quick: "quick", inpaint: "inpaint", upscale: "upscale" };
+  //: The address a ComfyUI Vibedraw Plugin task starts from. The plugin travels
+  //: with this app, so choosing that API format fills the server address in rather
+  //: than leaving the box empty for the user to type.
+  var CVP_EXAMPLE = "http://192.168.1.1:8188";
+  //: Examples an earlier version of this app offered as that same starting address.
+  //: A connection still holding one was never really chosen by the user, so it
+  //: moves up to the current example instead of pinning the app to an old address.
+  var CVP_PAST_EXAMPLES = [CVP_EXAMPLE, "http://192.168.1.2:8188"];
   //: The last /cvp/info document. It is what lets the client honour a
   //: capability's `ignores` and offer the sizes that capability really accepts,
   //: and it is refreshed every time the connection is tested.
@@ -174,6 +182,13 @@
     return marker > 0 ? value.slice(0, marker) : value;
   }
   function cvpTask(config) { return CVP_CAPABILITY[config && (config.capability || config.task || config.slot)] || "quick"; }
+  //: The address a CVP task should really use. A blank one, or one that is only an
+  //: example this app used to offer, resolves to the current example; an address
+  //: the user typed is returned untouched.
+  function cvpAddress(stored) {
+    var value = String(stored == null ? "" : stored).trim();
+    return !value || CVP_PAST_EXAMPLES.indexOf(value) >= 0 ? CVP_EXAMPLE : value;
+  }
   function cvpRemember(document) { if (document && document.spec) cvpInfo = document; return cvpInfo; }
   function cvpCapability(name) {
     var wanted = String(name == null ? "" : name).toLowerCase(), list = (cvpInfo && cvpInfo.capabilities) || [];
@@ -378,7 +393,7 @@
       // The first canvas the capability publishes is the starting one; its
       // width and height are taken together, never mirrored from one number.
       var canvas = sizes.length ? sizes[0] : null;
-      value.endpoint = "http://192.168.1.2:8188";
+      value.endpoint = CVP_EXAMPLE;
       value.model = "";
       value.inputMode = "sketch";
       value.width = canvas ? canvas[0] : (rendered ? 1024 : 512);
@@ -416,6 +431,11 @@
     test: test,
     validate: validate,
     preset: preset,
+    //: The server address a ComfyUI Vibedraw Plugin task starts from, and the
+    //: normalizer that maps a never-chosen address onto it. The settings card uses
+    //: both, so the address is filled in the moment that API format is chosen.
+    exampleEndpoint: CVP_EXAMPLE,
+    resolveEndpoint: cvpAddress,
     //: What the last /cvp/info said about one capability. The model card reads
     //: this to offer the sizes the plugin really accepts instead of a guess.
     capability: cvpCapability,

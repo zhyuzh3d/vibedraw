@@ -200,6 +200,9 @@
     });
     snapshot.result = storedImage(app.state.result);
     snapshot.render = storedImage(app.state.renderResult);
+    // The cover is the last generated picture and is stored the same way: a reference,
+    // never bytes. It is what the gallery card draws, so it is part of the artwork.
+    snapshot.cover = storedImage(app.state.cover);
     return snapshot;
   }
   function fingerprint(snapshot) {
@@ -219,7 +222,8 @@
       workId: snapshot && snapshot.workId || "",
       objects: (snapshot && snapshot.objects || []).filter(function (object) { return Boolean(object.asset || object.logicalFileId); }).map(function (object) { return { asset: object.asset || null, logicalFileId: object.logicalFileId || "" }; }),
       result: snapshot && snapshot.result ? { asset: snapshot.result.asset || null, logicalFileId: snapshot.result.logicalFileId || "" } : null,
-      render: snapshot && snapshot.render ? { asset: snapshot.render.asset || null, logicalFileId: snapshot.render.logicalFileId || "" } : null
+      render: snapshot && snapshot.render ? { asset: snapshot.render.asset || null, logicalFileId: snapshot.render.logicalFileId || "" } : null,
+      cover: snapshot && snapshot.cover ? { asset: snapshot.cover.asset || null, logicalFileId: snapshot.cover.logicalFileId || "" } : null
     };
   }
   async function persistImages() {
@@ -308,6 +312,10 @@
     if (copy.render && copy.render.asset) {
       try { copy.render.src = await app.services.assets.resolve(copy.render.asset); }
       catch (_) { copy.render.src = ""; missing = true; }
+    }
+    if (copy.cover && copy.cover.asset) {
+      try { copy.cover.src = await app.services.assets.resolve(copy.cover.asset); }
+      catch (_) { copy.cover.src = ""; }
     }
     if (missing) app.events.emit("error", new Error(app.i18n.text("部分历史图片无法读取，草稿与描述仍可编辑", "Some saved images are unavailable. Your sketch and prompt remain editable")));
     return copy;

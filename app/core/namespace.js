@@ -4,7 +4,7 @@
   var app = global.vibedraw = global.vibedraw || {};
   var listeners = {};
 
-  app.version = "0.5.0";
+  app.version = "0.5.12";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -53,6 +53,10 @@
     objects: [],
     result: null,
     renderResult: null,
+    // The cover is the last generated picture, kept as a reference into Hermit's file
+    // store. It outlives the result it came from, so a history card keeps showing the
+    // newest generation even after the sketch or the result is cleared.
+    cover: null,
     busy: false,
     history: [],
     future: []

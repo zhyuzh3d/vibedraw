@@ -7,7 +7,7 @@ VibeDraw 是一个可直接运行在 [Hermit](https://hermit.airen.life/) 宿主
 > 产品网站：<https://vibedraw.airen.life/> · 应用广场：<https://hermit.airen.life/pages/happs.html> · 源码仓库：<https://github.com/zhyuzh3d/vibedraw> · [GitHub Releases](https://github.com/zhyuzh3d/vibedraw/releases) · [MIT License](./LICENSE)
 
 - happ id：`life.airen.vibedraw`
-- 当前源码版本：`0.5.0`(versionCode `76`,见 `hermit.json`)
+- 当前源码版本：`0.5.12`(versionCode `88`,见 `hermit.json`)
 - 形态：HermitApp 的普通 happ,不能脱离宿主单独安装,纯原生 HTML / CSS / JavaScript,没有构建步骤
 
 ## 演示视频
@@ -19,6 +19,12 @@ https://github.com/user-attachments/assets/64923327-a8eb-4864-b0fc-7e51539d1718
 ▶ 也可以 **[在 YouTube 观看](https://www.youtube.com/shorts/nRPfrsWxRAI)**。觉得有意思的话,欢迎点赞、订阅 [@airenlife](https://www.youtube.com/@airenlife);想看画什么,直接在视频下留言。
 
 > 原始文件在 [`demo/01-mech-warrior.mp4`](./demo/01-mech-warrior.mp4)(4.8 MB,可直接下载);后续演示会依次放进 [`demo/`](./demo) 目录。
+
+**02 · 涂鸦秒变湖边别墅** —— 从一张空白画布一路画到成品,1 分 30 秒,无解说:
+
+▶ 也可以 **[在 YouTube 观看](https://www.youtube.com/shorts/AWg9Ir6X-_0)**。觉得有意思的话,欢迎点赞、订阅 [@airenlife](https://www.youtube.com/@airenlife);想看画什么,直接在视频下留言。
+
+> 原始文件与站内可直接播放的版本会随后一起补进 [`demo/`](./demo) 目录。
 
 ## 主要能力
 

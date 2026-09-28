@@ -25,6 +25,7 @@ const assetsJs = fs.readFileSync(path.join(root, "app/services/assets.js"), "utf
 const providersJs = fs.readFileSync(path.join(root, "app/services/providers.js"), "utf8");
 const hermitJs = fs.readFileSync(path.join(root, "app/platform/hermit.js"), "utf8");
 const renderPreviewJs = fs.readFileSync(path.join(root, "app/components/render-preview.js"), "utf8");
+const galleryJs = fs.readFileSync(path.join(root, "app/components/gallery.js"), "utf8");
 const runtimeJs = fs.readFileSync(path.join(root, "app/core/runtime.js"), "utf8");
 const drawingJs = fs.readFileSync(path.join(root, "app/core/drawing.js"), "utf8");
 assert.ok(html.includes('id="result-opacity"') && html.includes('id="result-visibility"'), "canvas bar must expose result opacity and visibility");
@@ -43,7 +44,44 @@ assert.ok(html.includes('id="seed-value"') && !html.match(/id="seed-lock"[^>]*ar
 assert.ok(html.indexOf('id="generate-quick"') < html.indexOf('id="seed-lock"') && html.indexOf('id="seed-lock"') < html.indexOf('id="generate-quality"'), "seed button must sit between Fast and Quality");
 assert.ok(/id="generate-quality"[\s\S]*data-zh="渲染"/.test(html), "quality action must be presented as Render");
 assert.ok(html.includes('id="render-preview"') && html.includes('id="render-preview-surface"') && html.includes('id="render-preview-adjust"') && html.includes('id="render-preview-adjustments"') && html.includes('id="render-preview-download"') && html.includes('id="render-preview-reset"') && html.includes('id="render-preview-clear"') && html.includes('id="render-preview-close"') && html.includes('id="render-preview-stage"') && html.includes('role="toolbar"'), "Render must have a fullscreen preview toolbox, adjustment panel, and image stage");
-assert.equal((html.match(/data-render-adjust="result/g) || []).length, 6, "Render preview must expose six live color adjustment sliders");
+assert.equal((html.match(/data-render-adjust="result/g) || []).length, 4, "Render preview must expose the four live color adjustment sliders it keeps");
+// The render panel lost brightness and contrast, lost its frosted translucent
+// background, and gained the switch that decides whether its adjustments reach the
+// picture at all. The switch is part of the same draft as the sliders: it starts from
+// the saved render default, governs this preview, and is stored by save-default.
+assert.ok(!/data-render-adjust="result(Brightness|Contrast)"/.test(html) && !renderPreviewJs.includes("adjustments.resultBrightness") && !renderPreviewJs.includes("adjustments.resultContrast"), "the render panel must not offer or apply brightness and contrast");
+assert.match(html, /id="render-preview-adjust-enabled"[^>]*role="switch"/, "the action row must end in a switch for the color effect");
+assert.ok(renderPreviewJs.includes("adjustmentsEnabled = effectsToggle.checked") && renderPreviewJs.includes("resultAdjustmentsEnabled: adjustmentsEnabled !== false") && renderPreviewJs.includes("config.canvas.resultAdjustmentsEnabled = adjustmentsEnabled !== false"), "the switch must reach the drawn pixels, the download, and save-default");
+assert.ok(renderPreviewJs.includes("resultBrightness: NEUTRAL.resultBrightness") && renderPreviewJs.includes("resultContrast: NEUTRAL.resultContrast"), "brightness and contrast must stay neutral rather than becoming undefined filter terms");
+// The panel and the toolbar are both dark glass: the backdrop is blurred and its
+// brightness turned down, and what is written on them is white — labels, slider tracks
+// and the hollow handle's outline. The canvas panel keeps its light-surface grey, which
+// is why the slider colours are declared per panel instead of once for both.
+// Asserting that *some* rule dims the glass is a trap: this file already shipped a
+// later `.render-preview-tools{...brightness(1)!important}` that flattened the dimming
+// back to 1, and the substring check stayed green the whole time. So read the cascade
+// instead — take the last backdrop-filter that actually wins (deferring to !important,
+// as the browser does) and require the dim there. Re-adding a trailing flatten rule
+// turns this red, which is the whole point.
+function winningBackdrop(css, selector) {
+  const decls = css.split("}").map((chunk) => {
+    const at = chunk.lastIndexOf("{");
+    if (at < 0) return null;
+    const sel = chunk.slice(0, at).split("{").pop().trim();
+    return sel.split(",").some((part) => part.trim() === selector) ? chunk.slice(at + 1) : null;
+  }).filter((decl) => decl && decl.indexOf("backdrop-filter:") >= 0);
+  assert.ok(decls.length > 0, "expected at least one backdrop-filter rule for " + selector);
+  const important = decls.filter((decl) => /backdrop-filter:[^;]*!important/.test(decl));
+  const pool = important.length ? important : decls;
+  return pool[pool.length - 1];
+}
+assert.match(winningBackdrop(componentsCss, ".render-preview-adjustments"), /brightness\(\.58\)/, "the adjustment panel must be dark glass with the backdrop brightness turned down");
+assert.match(winningBackdrop(componentsCss, ".render-preview-tools"), /brightness\(\.58\)/, "the toolbar glass must be darkened the same way");
+assert.ok(/\.render-preview-adjustments\{[^}]*background:rgba\(9,10,13,/.test(componentsCss) && /\.render-preview-tools\{[^}]*background:rgba\(9,10,13,/.test(componentsCss), "both preview glass surfaces must sit on the same dark tint");
+assert.match(componentsCss, /\.render-preview-tools \.icon-button\{[^}]*color:#fff!important/, "the toolbar icons must be white on the dark glass");
+assert.match(componentsCss, /\.render-preview-adjustments \.color-adjust-item>span,\.render-preview-adjustments \.color-adjust-item output\{color:#fff/, "the panel must write in white");
+assert.ok(componentsCss.includes(".render-preview-adjustments .color-adjust-item input[type=range]::-webkit-slider-runnable-track{background:#fff}") && componentsCss.includes(".render-preview-adjustments .color-adjust-item input[type=range]::-webkit-slider-thumb{border-color:#fff") && componentsCss.includes(".render-preview-adjust-actions .button-secondary{background:rgba(255,255,255,.14)"), "the preview's track, its outlined handle and its secondary buttons must all be white");
+assert.ok(componentsCss.includes(".color-adjust-item input[type=range]::-webkit-slider-runnable-track{background:#dfe3e9}") && componentsCss.includes(".color-adjust-item input[type=range]::-webkit-slider-thumb{width:18px;height:18px;margin-top:-7px;border:2px solid #c2c8d2"), "the canvas panel must keep its pale grey slider instead of inheriting the preview's white");
 assert.ok(html.includes('id="render-preview-adjust-close"') && html.includes('id="render-preview-adjust-reset"') && html.includes('id="render-preview-adjust-default"'), "Render preview adjustments must expose close, reset, and save-default actions");
 assert.ok(html.includes('id="prompt-display"') && html.includes('id="prompt-strength"') && html.includes('id="prompt-strength-default"') && html.includes('id="prompt-strength-value"') && html.includes('min="20" max="100"'), "Main prompt row must expose the image weight control bounded to 20-100%, its percentage, and the 80% shortcut");
 assert.ok(editorJs.includes("var value = Math.max(20, Math.min(100, Math.round(Number(app.state.strength || 0.8) * 100)))") && editorJs.includes("value = Math.max(20, Math.min(100, Number(value) || 80)"), "the image weight control and its setter must share the 20-100% range declared by the markup");
@@ -55,7 +93,32 @@ assert.ok(editorJs.includes('detail.slot === "upscale"') && editorJs.includes('n
 assert.ok(editorJs.includes('syncRenderResult(true)') && editorJs.includes('trigger.hidden = true') && editorJs.includes('setTimeout(function ()'), "Repeated high-resolution renders must replay the diamond completion animation");
 assert.ok(renderPreviewJs.includes('scale = Math.max(1, Math.min(8') && renderPreviewJs.includes('type: "pan"') && renderPreviewJs.includes('type: "pinch"'), "render preview must support bounded pan and pinch zoom");
 assert.ok(renderPreviewJs.includes("createFrameTask(apply)"), "render preview transforms must be coalesced to animation frames");
-assert.ok(editorJs.includes("promptDrag") && editorJs.includes("display.scrollLeft = promptDrag.scrollLeft - delta"), "main prompt must support press-drag horizontal scrolling");
+// The description on the drawing screen used to be dragged sideways. It is a label
+// with a tap target now: too long and it is clipped with an ellipsis, and a tap opens
+// the dialog that edits it instead of scrolling it. Saving a changed description is a
+// reason to draw again — the same path a brush stroke takes — and the sketch weight
+// only counts once the finger is up, so it hangs off `change` rather than one `input`
+// per pixel of the drag.
+assert.match(editorCss, /\.prompt-readonly\{[^}]*flex:0 0 50%;[^}]*overflow:hidden;text-overflow:ellipsis;white-space:nowrap[^}]*\}/, "the description must take half the bar and be clipped with an ellipsis");
+assert.match(editorCss, /\.prompt-strength\{[^}]*flex:1 1 0[^}]*\}/, "the sketch weight must fill the other half of the bar");
+assert.ok(!editorJs.includes("promptDrag") && !editorJs.includes("scrollLeft") && !/\.prompt-readonly\{[^}]*overflow-x:auto/.test(editorCss) && !editorCss.includes(".prompt-readonly::-webkit-scrollbar"), "the horizontal scrolling design must be gone, not merely hidden");
+assert.match(html, /id="prompt-display"[^>]*role="button"/, "the description must announce itself as something that can be opened");
+// The pencil is an inline sibling of the description label, so the whole line — icon
+// included — is one tap target. The failure mode this guards is silent: any code that
+// writes the tap target's own textContent erases the icon on the next refresh, and a
+// screenshot taken before that refresh would still look right.
+assert.match(html, /id="prompt-display"[^>]*><i class="fa-solid fa-pen prompt-edit-icon" aria-hidden="true"><\/i><span[^>]*id="prompt-display-text"/, "the description must open with a pencil icon that sits before its label inside the same tap target");
+assert.match(editorCss, /\.prompt-edit-icon\{[^}]*margin-right:5px;[^}]*font-size:10px;[^}]*vertical-align:middle/, "the pencil must be a small inline glyph at the start of the line");
+assert.ok(editorJs.includes('node("prompt-display-text"), text =') && appJs.includes('getElementById("prompt-display-text").textContent = snapshot.prompt'), "both the refresh path and the restore path must fill the label inside the tap target");
+assert.ok(!editorJs.includes('node("prompt-display").textContent') && !appJs.includes('getElementById("prompt-display").textContent'), "no code may write the tap target's own textContent, or the pencil disappears on the next refresh");
+// The empty canvas opens with a pencil too. It used to carry a fountain-pen nib, which
+// reads as a different tool than the one the app actually draws with.
+assert.match(html, /id="stage-empty"><i class="fa-solid fa-pen"><\/i><strong/, "the empty canvas must open with a pencil rather than a fountain-pen nib");
+assert.ok(!html.includes("fa-pen-nib"), "no fountain-pen nib may remain in the empty-canvas placeholder");
+const promptEditorBody = editorJs.slice(editorJs.indexOf("function editPrompt"), editorJs.indexOf("function bindOptions"));
+assert.ok(promptEditorBody.includes("data-cancel") && promptEditorBody.includes("data-save") && promptEditorBody.includes("app.state.prompt = next") && promptEditorBody.includes("app.services.imageEngine.schedule()"), "the description dialog must offer cancel and save, and a saved change must ask for a redraw");
+assert.ok(promptEditorBody.indexOf('next === String(app.state.prompt || "").trim()') > 0 && promptEditorBody.indexOf('next === String(app.state.prompt || "").trim()') < promptEditorBody.indexOf("app.services.imageEngine.schedule()"), "an unchanged description must close without asking for a redraw");
+assert.ok(editorJs.includes("display.onclick = editPrompt") && editorJs.includes('strength.addEventListener("change", function () { app.services.imageEngine.schedule(); })') && editorJs.includes('node("prompt-strength-default").onclick = function () { setPromptStrength(80); app.services.imageEngine.schedule(); }'), "a tap on the description and a released sketch-weight control must both schedule the automatic pass");
 assert.ok(editorJs.includes("setPromptStrength(80)") && editorJs.includes("app.state.strength = value / 100"), "main image weight must share the canvas strength and provide an 80% shortcut");
 assert.ok(editorJs.includes('node("prompt-strength-value").textContent = value + "%"') && editorCss.includes('.prompt-strength .icon-button{flex:0 0 24px') && editorCss.includes('margin:0 0 0 1px') && editorCss.includes('margin-left:3px'), "main image weight must use a borderless compact icon, tight gaps, and visible percentage");
 assert.ok(renderPreviewJs.includes('document.getElementById("render-preview-download").onclick') && renderPreviewJs.includes('surface.toDataURL("image/png")') && renderPreviewJs.includes('result = result || current') && renderPreviewJs.includes('surfaceTask.request()') && renderPreviewJs.includes('saveAdjustmentsDefault'), "render preview download and adjustment actions must use the adjusted surface");
@@ -189,6 +252,12 @@ assert.match(editorCss, /body\.canvas-fullscreen\.fullscreen-tools-collapsed \.f
 assert.match(editorCss, /body\.canvas-fullscreen \.fullscreen-tools-toggle\{[^}]*top:36px;[^}]*width:48px;height:38px;[^}]*border-radius:9px 9px 0 0;[^}]*backdrop-filter:blur\(16px\)/);
 assert.match(editorCss, /body\.canvas-fullscreen \.fullscreen-bottom>\.drawing-dock\{[^}]*background:rgba[^}]*backdrop-filter:blur\(18px\)[^}]*contrast\(1\.24\)/, "fullscreen tools must use a translucent frosted-glass surface");
 assert.match(editorCss, /body\.canvas-fullscreen\.fullscreen-tools-collapsed \.fullscreen-bottom>\.drawing-dock[^}]*display:none/);
+// Collapsing the bottom tools must clear the top of the screen as well, and it has to be a
+// real hide: the base rule sets `display:flex`, so anything short of `display:none` leaves an
+// invisible bar that still swallows taps on the canvas behind it.
+assert.match(editorCss, /body\.canvas-fullscreen\.fullscreen-tools-collapsed \.canvas-bar\{display:none\}/, "collapsing the bottom tools must take the top canvas bar with it");
+assert.ok(!/fullscreen-tools-collapsed[^{]*\.canvas-bar\{[^}]*display:(?!none)/.test(editorCss), "no collapsed-state rule may put the top bar back on screen");
+assert.ok(html.includes('data-en="Collapse the bottom tools and the top bar"'), "the collapse handle must say that it clears the top bar too");
 assert.match(editorCss, /body\.canvas-fullscreen #canvas-fullscreen\{background:var\(--accent\);color:#fff/);
 assert.ok(canvasJs.includes('app.events.emit("canvas:interaction"') && editorJs.includes('app.events.on("canvas:interaction"'), "fullscreen chrome must follow canvas interaction lifecycle");
 assert.match(componentsCss, /\.modal-actions\{[^}]*flex:0 0 auto/);
@@ -202,7 +271,7 @@ assert.ok(html.includes('id="status-line"') && (html.match(/data-help-zh=/g) || 
 assert.ok(editorJs.includes('app.state.layerOpacity = 0.2') && editorJs.includes('Number(app.state.layerOpacity) < 0.2'), "Canvas interaction must restore a hidden overlay drawing layer to 20% visibility");
 assert.ok(editorJs.includes('function animateResultOpacityFloor()') && editorJs.includes('duration = 500') && editorJs.includes('app.state.resultOpacity = from +'), "Fast and rolled-seed results must animate opacity back to 20% when hidden");
 assert.match(editorCss, /\.stage-busy\{[^}]*pointer-events:none\}/, "Generation wait layer must pass pointer input through to the canvas");
-assert.ok(componentsCss.includes(".render-preview{position:fixed;z-index:1000") && componentsCss.includes(".render-preview{position:fixed!important") && componentsCss.includes("width:100vw!important") && componentsCss.includes(".render-preview-stage{position:absolute!important;inset:0!important") && componentsCss.includes("height:100%!important") && componentsCss.includes(".render-preview-tools .icon-button+.icon-button{margin-left:10px!important}") && componentsCss.includes("background:transparent!important") && componentsCss.includes("backdrop-filter:blur(18px) saturate(1.45) contrast(1.2)"), "fullscreen render preview must stay above app chrome with a fixed frosted toolbar");
+assert.ok(componentsCss.includes(".render-preview{position:fixed;z-index:1000") && componentsCss.includes(".render-preview{position:fixed!important") && componentsCss.includes("width:100vw!important") && componentsCss.includes(".render-preview-stage{position:absolute!important;inset:0!important") && componentsCss.includes("height:100%!important") && componentsCss.includes(".render-preview-tools .icon-button+.icon-button{margin-left:10px!important}") && componentsCss.includes("background:transparent!important") && componentsCss.includes("backdrop-filter:blur(16px) saturate(1.1) brightness(.58)"), "fullscreen render preview must stay above app chrome with a fixed darkened toolbar");
 // This device runs Chrome 83, which predates flex gap: a flex row spaced with `gap`
 // silently collapses into touching children, which is exactly how the preview toolbar
 // and the main prompt row shipped broken. Spacing in a flex row must be an adjacent
@@ -212,7 +281,7 @@ assert.ok(componentsCss.includes(".render-preview{position:fixed;z-index:1000") 
 });
 assert.ok(componentsCss.includes(".render-preview-weight{margin-left:8px;width:calc(34% - 8px)}") && editorCss.includes("height:32px;margin-left:8px}"), "the preview weight box and the main weight control must claim their 8px through a margin");
 assert.ok(componentsCss.includes(".render-preview-adjust-actions{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-start;padding-top:4px}") && componentsCss.includes(".render-preview-adjust-actions .button{min-height:34px;padding:6px 15px;font-size:11.5px}"), "the adjustment actions must be left-aligned full-size buttons");
-assert.ok(componentsCss.includes("contrast(2) brightness(1)!important") && editorCss.includes("contrast(2) brightness(1)!important"), "fullscreen frosted surfaces must use the high-contrast 2.0 brightness treatment");
+assert.ok(editorCss.includes("contrast(2) brightness(1)!important") && !componentsCss.includes("contrast(2) brightness(1)!important"), "the canvas fullscreen chrome keeps its high-contrast 2.0 glass; the render preview alone dims below 1, so no brightness(1) override may reappear there");
 assert.ok(html.includes('class="fullscreen-pan-thumb"') && editorJs.includes("bindFullscreenPanToggle") && editorJs.includes("canvasPanLimit") && editorJs.includes("is-pan-scrollbar"), "Fullscreen toggle must support long-press horizontal canvas panning");
 assert.ok(settingsJs.includes('range("colorOpacity"') && settingsJs.includes('object.opacity = opacity') && settingsJs.includes('app.state.opacity = opacity'), "color dialogs must apply opacity to the active stroke tool or selected strokes");
 assert.match(componentsCss, /\.color-slider-stack \.field\{margin-bottom:5px\}/, "color sliders must use the compact vertical stack");
@@ -243,6 +312,60 @@ assert.ok(storeJs.includes("snapshot.render = storedImage(app.state.renderResult
 assert.ok(canvasJs.includes("state.renderResult = saved.render || null"), "loading an artwork must put its last render back into the state, or the saved render is unreachable");
 assert.ok(assetsJs.includes("snapshot && snapshot.render ? [snapshot.render] : []"), "the asset cleanup must keep the files of the artwork's last render");
 assert.ok(!/history/.test(storeJs), "the undo journal must stay in memory and never enter an artwork record");
+// Layering a group. The old mutator opened with `selectionIds().length !== 1`, so a group
+// (whose members all arrive selected at once) could not be layered at all, and the same
+// single-object test armed the two arrows. Both halves have to move together or the arrow
+// is live while the mutator ignores it, which looks exactly like a broken button.
+const layerBody = canvasJs.slice(canvasJs.indexOf("function canMoveLayer"), canvasJs.indexOf("function scaleSelected"));
+assert.ok(!layerBody.includes("length !== 1") && !layerBody.includes("selectionIds().length !=="), "layering must not require a single-object selection");
+assert.ok(layerBody.includes("ids.has(state.objects[index + 1].id)") && layerBody.includes("ids.has(state.objects[index - 1].id)"), "each selected object must test the neighbour it is about to pass, which is what keeps a group from being split apart");
+assert.ok(canvasJs.includes("canMoveLayer: canMoveLayer") && editorJs.includes('node("layer-down").disabled = !canvas.canMoveLayer(-1)') && editorJs.includes('node("layer-up").disabled = !canvas.canMoveLayer(1)'), "the arrows must be armed by the canvas's own predicate rather than by a second copy of the rule");
+assert.ok(!editorJs.includes("canLayerDown") && !/ids\.length !== 1 \|\| selected/.test(editorJs), "the duplicated single-object arming rule must be gone from the editor");
+assert.ok(!html.includes("把单个所选对象"), "the layer arrows must not keep promising that only a single object moves");
+// Gallery thumbnails must reach the edges of the card. A card is wider than it is tall while
+// the thumbnail is a square 288px bitmap, so containing the canvas left a pale band down both
+// sides of every card — and the rendered image was contained inside that square as well,
+// which put the same band one level further in. Both levels have to cover, or either one of
+// them brings the bars back.
+assert.match(componentsCss, /\.art-preview canvas\{[^}]*width:100%;height:100%;object-fit:cover/, "the gallery thumbnail must cover its card rather than leave side bands");
+assert.ok(!/\.art-preview canvas\{[^}]*object-fit:contain/.test(componentsCss), "no rule may contain the gallery thumbnail again");
+const coveredBody = canvasJs.slice(canvasJs.indexOf("function drawCovered"), canvasJs.indexOf("function drawImageObject"));
+assert.match(coveredBody, /Math\.max\(/, "filling a frame means scaling by the larger of the two ratios");
+assert.ok(!coveredBody.includes("Math.min("), "drawCovered must not quietly behave like drawContained");
+const thumbnailBody = canvasJs.slice(canvasJs.indexOf("async function thumbnail"), canvasJs.indexOf("app.components.canvas = {"));
+assert.ok(thumbnailBody.includes("drawCovered(ctx, result, size, size)") && !thumbnailBody.includes("drawContained(ctx, result"), "the thumbnail bitmap must fill its own square too, or a non-square render comes back as a band inside the card");
+// The history card is drawn from the artwork's cover: the last generated picture, held as
+// a reference into Hermit's file store. Reaching that needs four things at once, and
+// dropping any one of them silently loses the card's image — the picture is filed when it
+// arrives rather than at the next autosave, the record stores the reference, the thumbnail
+// reads it first, and cleanup counts it among the artwork's references.
+assert.ok(imageEngineJs.includes("await app.services.assets.coverFrom(generated)") && imageEngineJs.includes("app.state.cover = "), "a finished generation must be filed into Hermit's file store at once and become the document's cover");
+assert.match(imageEngineJs, /else app\.state\.result = generated;[\s\S]*?coverFrom\(generated\)/, "the cover must be built from the very object the stage shows, so the card and the canvas can never disagree about which picture was generated last");
+assert.match(storeJs, /snapshot\.cover = storedImage\(app\.state\.cover\)/, "the cover must be kept in the record as a reference, exactly like the result, never as bytes");
+assert.ok(storeJs.includes("cover: snapshot && snapshot.cover ?"), "the cover must join the persisted-snapshot model too, or the saved cover keeps looking like a change that was never written");
+assert.ok(storeJs.includes("copy.cover.src = await app.services.assets.resolve(copy.cover.asset)"), "restoring an artwork must resolve the cover's file reference");
+const referencesBody = assetsJs.slice(assetsJs.indexOf("function references("), assetsJs.indexOf("async function cleanup("));
+assert.ok(referencesBody.includes("snapshot.cover"), "cleanup must treat the cover as a reference, or the card's chunks are reclaimed the first time anything else about the artwork changes");
+assert.ok(canvasJs.includes("state.cover = saved.cover || null"), "loading an artwork must bring its cover back, including one whose result was cleared");
+assert.match(thumbnailBody, /if \(saved\.cover && saved\.cover\.asset\) \{[\s\S]*?if \(saved\.result && saved\.result\.asset\)/, "the card must try the cover before the result, for a cover is the newer picture by definition");
+// The history list has to stay usable with a few hundred works, and on this host that is a
+// limit problem twice over. Cards must arrive a page at a time, and covers must be fetched
+// one at a time: firing the visible cards together made the device answer `Too many
+// concurrent Hermit requests`, and `loadPreview` recorded that as a permanent error, so the
+// affected cards stayed blank for good. Each half of the fix is asserted on its own, because
+// losing either one brings the same blank cards back.
+assert.ok(galleryJs.includes("list.slice(shown, shown + PAGE_SIZE)") && galleryJs.includes("PAGE_SIZE = 12"), "the gallery must build its grid a page at a time, not one innerHTML for every work");
+assert.ok(!galleryJs.includes("grid.innerHTML = list.map") && galleryJs.includes("gallery-sentinel"), "the whole grid must never be rendered in one pass; the sentinel is what asks for the next page");
+assert.match(componentsCss, /\.gallery-sentinel\{[^}]*height:1px/, "the sentinel must be a laid-out element the observer can watch");
+const observerBody = galleryJs.slice(galleryJs.indexOf("function createPreviewObserver"), galleryJs.indexOf("function offScreen"));
+assert.ok(observerBody.includes("enqueuePreview(") && !observerBody.includes("loadPreview("), "a card coming into view must join the queue rather than start a load of its own");
+assert.ok(observerBody.includes('rootMargin: "180px 0px"'), "a cover may only be fetched once its card is near the viewport");
+assert.equal(galleryJs.split("await loadPreview(").length, 2, "covers must be drawn from the single queue; a second caller would put the burst back");
+assert.ok(!galleryJs.includes("worker(); worker();"), "the two-worker preview pool must stay gone");
+assert.ok(galleryJs.includes("if (observer) observer.observe(card); else enqueuePreview(grid, item, token);"), "with no IntersectionObserver the fallback still has to reach the queue rather than draw on the spot");
+assert.match(galleryJs, /for \(var attempt = 0; attempt < PREVIEW_ATTEMPTS/, "a failed cover must be retried, or a transient host collision leaves the card blank forever");
+assert.ok(galleryJs.includes("MAX_LIVE_PREVIEWS") && galleryJs.includes("drawnPreviews.length > MAX_LIVE_PREVIEWS") && galleryJs.includes("target.width = 0"), "drawn covers must be given back past the cap, or a long list holds one bitmap per work");
+assert.ok(galleryJs.includes("function offScreen(card)") && galleryJs.includes("drawnPreviews.filter(offScreen)[0]"), "only a cover that has scrolled away may be released, or the list redraws what the user is looking at");
 assert.ok(html.includes("成图最多可回退 120 张") && html.includes("Up to 120 results can be stepped back"), "the undo help must state how far the generated-image journal reaches");
 const references = [...html.matchAll(/(?:src|href)="([^"#]+)"/g)].map(match => match[1]);
 for (const reference of references) {
@@ -281,6 +404,8 @@ childProcess.execFileSync(process.execPath, [path.join(root, "tests/providers.te
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/workspace.test.mjs")], { stdio: "inherit" });
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/performance.test.mjs")], { stdio: "inherit" });
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/assets.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/layer.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/cover.test.mjs")], { stdio: "inherit" });
 if (!process.argv.includes("--source-only") && fs.existsSync(path.join(root, "hermit-install.json"))) {
   childProcess.execFileSync("python3", [path.join(root, "tools/package.py"), "--check"], { stdio: "inherit" });
 }

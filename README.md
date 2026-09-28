@@ -18,7 +18,9 @@ VibeDraw 是一个可直接运行在 [Hermit](https://hermit.airen.life/) 宿主
 
 **01 · 绘制机甲战士** —— 从涂鸦草稿一路画到成图的完整创作过程,1 分 31 秒,无解说。
 
-> 说明：GitHub 不支持在 README 里内嵌播放仓库内的视频文件(会剥离播放器),点击上面的预览图即可打开播放,也可以直接打开 [demo/01-mech-warrior.mp4](./demo/01-mech-warrior.mp4)。后续演示视频会依次放在 [`demo/`](./demo) 目录。
+观看：[站内打开](./demo/01-mech-warrior.mp4) · [直链播放](https://raw.githubusercontent.com/zhyuzh3d/vibedraw/main/demo/01-mech-warrior.mp4) · 后续演示视频会依次放进 [`demo/`](./demo) 目录。
+
+> 说明：GitHub 不支持在 README 里内嵌播放仓库内的视频(会剥离播放器),所以这里用「预览图 + 链接」的方式。若站内打开后只有下载按钮,用上面的「直链播放」,浏览器会直接播放。
 
 ## 主要能力
 

@@ -10,8 +10,6 @@ VibeDraw 是一个可直接运行在 [Hermit](https://hermit.airen.life/) 宿主
 - 当前源码版本：`0.5.0`(versionCode `76`,见 `hermit.json`)
 - 形态：HermitApp 的普通 happ,不能脱离宿主单独安装,纯原生 HTML / CSS / JavaScript,没有构建步骤
 
-![VibeDraw 画布](./device-current-canvas.png)
-
 ## 演示视频
 
 [![用 VibeDraw 绘制机甲战士](./demo/01-mech-warrior.jpg)](./demo/01-mech-warrior.mp4)

@@ -10,7 +10,15 @@ VibeDraw 是一个可直接运行在 [Hermit](https://hermit.airen.life/) 宿主
 - 当前源码版本：`0.5.0`(versionCode `76`,见 `hermit.json`)
 - 形态：HermitApp 的普通 happ,不能脱离宿主单独安装,纯原生 HTML / CSS / JavaScript,没有构建步骤
 
-！[VibeDraw 画布](./device-current-canvas.png)
+![VibeDraw 画布](./device-current-canvas.png)
+
+## 演示视频
+
+[![用 VibeDraw 绘制机甲战士](./demo/01-mech-warrior.jpg)](./demo/01-mech-warrior.mp4)
+
+**01 · 绘制机甲战士** —— 从涂鸦草稿一路画到成图的完整创作过程,1 分 31 秒,无解说。
+
+> 说明：GitHub 不支持在 README 里内嵌播放仓库内的视频文件(会剥离播放器),点击上面的预览图即可打开播放,也可以直接打开 [demo/01-mech-warrior.mp4](./demo/01-mech-warrior.mp4)。后续演示视频会依次放在 [`demo/`](./demo) 目录。
 
 ## 主要能力
 
